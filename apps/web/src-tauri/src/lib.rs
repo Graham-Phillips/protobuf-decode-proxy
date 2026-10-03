@@ -7,11 +7,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, ReflectMessage, Value};
 use protobuf_decoder_proxy::{
     generate_proxy_ca, start_proxy_on_default_addr_with_ca, BodyCapture, Direction, Protocol,
     ProxyCa, ProxyEvent, ProxyHandle, WebSocketEventKind, WebSocketMessageKind,
 };
-use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, ReflectMessage, Value};
 use serde::Deserialize;
 use serde::Serialize;
 use tauri::Manager;
@@ -167,6 +167,51 @@ impl<'a> ProtoDecoderRegistry<'a> {
                     .find_map(|schema| schema.pool.get_message_by_name(message_name))
             })
     }
+
+    fn find_company_message_for_event(
+        &self,
+        event: &ProxyEvent,
+        message_type: i32,
+        payload_version: u32,
+    ) -> Result<Option<prost_reflect::MessageDescriptor>, String> {
+        let scoped_schemas = self
+            .schemas
+            .iter()
+            .filter(|schema| schema_matches_event(schema, event))
+            .collect::<Vec<_>>();
+        let candidate_schemas = if scoped_schemas.is_empty() {
+            self.schemas.iter().collect::<Vec<_>>()
+        } else {
+            scoped_schemas
+        };
+
+        let mut candidates = candidate_schemas
+            .iter()
+            .flat_map(|schema| {
+                schema
+                    .company_message_mappings
+                    .get(&(message_type, payload_version))
+                    .into_iter()
+                    .flat_map(|names| names.iter())
+                    .filter_map(|name| schema.pool.get_message_by_name(name))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.full_name().cmp(right.full_name()));
+        candidates.dedup_by(|left, right| left.full_name() == right.full_name());
+
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [candidate] => Ok(Some(candidate.clone())),
+            candidates => Err(format!(
+                "company protobuf message type {message_type} version {payload_version} is ambiguous: {}",
+                candidates
+                    .iter()
+                    .map(|candidate| candidate.full_name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -232,6 +277,7 @@ struct ProtoSchemaBundle {
     host_match_value: Option<String>,
     path_prefix: Option<String>,
     pool: DescriptorPool,
+    company_message_mappings: BTreeMap<(i32, u32), Vec<String>>,
     status: ProtoSchemaStatus,
 }
 
@@ -343,7 +389,13 @@ async fn proxy_events(state: tauri::State<'_, ProxyState>) -> Result<ProxyEventS
     let events = capture.events().await;
     let mut active_websocket_connections = BTreeSet::new();
     let mut opened_websocket_connections = BTreeSet::new();
-    let http_exchanges = build_http_exchanges(&events);
+    let http_exchanges = {
+        let schemas = state
+            .proto_schemas
+            .lock()
+            .map_err(|error| error.to_string())?;
+        build_http_exchanges(&events, &schemas)
+    };
     let websocket_message_previews = {
         let schemas = state
             .proto_schemas
@@ -846,6 +898,7 @@ fn load_proto_descriptor_bundle(
         .map_err(|error| format!("failed to read protobuf descriptor set: {error}"))?;
     let pool = DescriptorPool::decode(bytes.as_slice())
         .map_err(|error| format!("failed to parse protobuf descriptor set: {error}"))?;
+    let company_message_mappings = company_message_mappings_from_descriptor_set(&bytes)?;
     let host_match_type = parse_host_match_type(&host_match_type)?;
     let host_match_value = normalize_optional_string(host_match_value);
     if !matches!(host_match_type, HostMatchType::Any) && host_match_value.is_none() {
@@ -881,10 +934,172 @@ fn load_proto_descriptor_bundle(
         host_match_value,
         path_prefix,
         pool,
+        company_message_mappings,
         status: status.clone(),
     });
 
     Ok(status)
+}
+
+#[derive(Debug)]
+enum DescriptorWireValue {
+    Varint(u64),
+    Bytes(Vec<u8>),
+}
+
+fn company_message_mappings_from_descriptor_set(
+    bytes: &[u8],
+) -> Result<BTreeMap<(i32, u32), Vec<String>>, String> {
+    let mut mappings = BTreeMap::<(i32, u32), Vec<String>>::new();
+
+    for (field_number, value) in descriptor_wire_fields(bytes)? {
+        if field_number != 1 {
+            continue;
+        }
+        let DescriptorWireValue::Bytes(file_bytes) = value else {
+            continue;
+        };
+
+        let file_fields = descriptor_wire_fields(&file_bytes)?;
+        let package = file_fields
+            .iter()
+            .find_map(|(field_number, value)| {
+                (*field_number == 2).then(|| match value {
+                    DescriptorWireValue::Bytes(bytes) => String::from_utf8(bytes.clone()).ok(),
+                    DescriptorWireValue::Varint(_) => None,
+                })
+            })
+            .flatten()
+            .unwrap_or_default();
+        let ordinal = file_fields.iter().find_map(|(field_number, value)| {
+            if *field_number != 8 {
+                return None;
+            }
+            let DescriptorWireValue::Bytes(options) = value else {
+                return None;
+            };
+            descriptor_wire_fields(options).ok()?.into_iter().find_map(
+                |(option_field_number, option_value)| {
+                    if option_field_number != 50009 {
+                        return None;
+                    }
+                    let DescriptorWireValue::Varint(raw) = option_value else {
+                        return None;
+                    };
+                    let decoded = ((raw >> 1) as i64) ^ (-((raw & 1) as i64));
+                    i32::try_from(decoded).ok()
+                },
+            )
+        });
+
+        let Some(ordinal) = ordinal else {
+            continue;
+        };
+
+        for (field_number, value) in file_fields {
+            if field_number != 4 {
+                continue;
+            }
+            let DescriptorWireValue::Bytes(message_bytes) = value else {
+                continue;
+            };
+            let Some(name) = descriptor_wire_fields(&message_bytes)?
+                .into_iter()
+                .find_map(|(message_field_number, message_value)| {
+                    (message_field_number == 1).then(|| match message_value {
+                        DescriptorWireValue::Bytes(bytes) => String::from_utf8(bytes).ok(),
+                        DescriptorWireValue::Varint(_) => None,
+                    })
+                })
+                .flatten()
+            else {
+                continue;
+            };
+
+            let full_name = if package.is_empty() {
+                name.clone()
+            } else {
+                format!("{package}.{name}")
+            };
+            mappings
+                .entry((ordinal, company_message_version(&name)))
+                .or_default()
+                .push(full_name);
+        }
+    }
+
+    for names in mappings.values_mut() {
+        names.sort();
+        names.dedup();
+    }
+
+    Ok(mappings)
+}
+
+fn descriptor_wire_fields(mut bytes: &[u8]) -> Result<Vec<(u32, DescriptorWireValue)>, String> {
+    let mut fields = Vec::new();
+
+    while !bytes.is_empty() {
+        let (key, rest) = read_varint(bytes)?;
+        bytes = rest;
+        let field_number = u32::try_from(key >> 3)
+            .map_err(|_| "descriptor field number is too large".to_owned())?;
+        if field_number == 0 {
+            return Err("descriptor field number cannot be zero".to_owned());
+        }
+
+        match (key & 7) as u8 {
+            0 => {
+                let (value, rest) = read_varint(bytes)?;
+                fields.push((field_number, DescriptorWireValue::Varint(value)));
+                bytes = rest;
+            }
+            1 => {
+                if bytes.len() < 8 {
+                    return Err("truncated fixed64 descriptor field".to_owned());
+                }
+                bytes = &bytes[8..];
+            }
+            2 => {
+                let (length, rest) = read_varint(bytes)?;
+                let length = usize::try_from(length)
+                    .map_err(|_| "descriptor field length is too large".to_owned())?;
+                if rest.len() < length {
+                    return Err("truncated length-delimited descriptor field".to_owned());
+                }
+                fields.push((
+                    field_number,
+                    DescriptorWireValue::Bytes(rest[..length].to_vec()),
+                ));
+                bytes = &rest[length..];
+            }
+            5 => {
+                if bytes.len() < 4 {
+                    return Err("truncated fixed32 descriptor field".to_owned());
+                }
+                bytes = &bytes[4..];
+            }
+            wire_type => {
+                return Err(format!("unsupported descriptor wire type {wire_type}"));
+            }
+        }
+    }
+
+    Ok(fields)
+}
+
+fn company_message_version(name: &str) -> u32 {
+    let Some(name) = name.strip_suffix("Proto") else {
+        return 1;
+    };
+    let Some(version_start) = name.rfind('V') else {
+        return 1;
+    };
+    let version = &name[version_start + 1..];
+    if version.is_empty() || !version.chars().all(|character| character.is_ascii_digit()) {
+        return 1;
+    }
+    version.parse().unwrap_or(1)
 }
 
 #[tauri::command]
@@ -1016,7 +1231,7 @@ async fn decode_websocket_message_payload(
     })
 }
 
-fn build_http_exchanges(events: &[ProxyEvent]) -> Vec<HttpExchange> {
+fn build_http_exchanges(events: &[ProxyEvent], schemas: &[ProtoSchemaBundle]) -> Vec<HttpExchange> {
     let mut exchanges = BTreeMap::<String, HttpExchangeBuilder>::new();
 
     for event in events {
@@ -1037,7 +1252,7 @@ fn build_http_exchanges(events: &[ProxyEvent]) -> Vec<HttpExchange> {
 
     let mut exchanges = exchanges
         .into_values()
-        .filter_map(HttpExchangeBuilder::build)
+        .filter_map(|exchange| exchange.build(schemas))
         .collect::<Vec<_>>();
 
     exchanges.sort_by_key(|exchange| exchange.started_at_unix_ms);
@@ -1095,12 +1310,20 @@ fn decode_websocket_payload_preview(
     }
 
     match event.direction {
-        Direction::Request => {
-            decode_payload_preview(payload_hint, event.body_capture.as_ref(), None)
-        }
-        Direction::Response | Direction::Internal => {
-            decode_payload_preview(payload_hint, None, event.body_capture.as_ref())
-        }
+        Direction::Request => decode_payload_preview(
+            payload_hint,
+            event.body_capture.as_ref(),
+            None,
+            event,
+            schemas,
+        ),
+        Direction::Response | Direction::Internal => decode_payload_preview(
+            payload_hint,
+            None,
+            event.body_capture.as_ref(),
+            event,
+            schemas,
+        ),
     }
 }
 
@@ -1199,6 +1422,166 @@ fn decode_websocket_payload_with_mapping(
             fields: Vec::new(),
         }
     }))
+}
+
+const COMPANY_PACKET_MESSAGE: &str = "com.cmcmarkets.iphone.transport.protos.iPhonePacketProto";
+
+fn decode_company_packet_payload(
+    bytes: &[u8],
+    event: &ProxyEvent,
+    schemas: &[ProtoSchemaBundle],
+    truncated: bool,
+    capture_limit: usize,
+) -> Option<PayloadDecode> {
+    let registry = ProtoDecoderRegistry::new(schemas);
+    let envelope_descriptor = registry.find_message_for_event(event, COMPANY_PACKET_MESSAGE)?;
+    let envelope = match DynamicMessage::decode(envelope_descriptor.clone(), bytes) {
+        Ok(envelope) => envelope,
+        Err(_) => return None,
+    };
+    let Some(items_value) = envelope.get_field_by_name("messageList") else {
+        return None;
+    };
+    let items = match items_value.as_ref() {
+        Value::List(items) => items,
+        _ => {
+            return Some(PayloadDecode {
+                direction: Some(direction_name(&event.direction).to_owned()),
+                status: "Company protobuf packet has a non-repeated messageList field.".to_owned(),
+                schema_message: Some(envelope_descriptor.full_name().to_owned()),
+                json_previews: Vec::new(),
+                fields: dynamic_message_fields(&envelope),
+            })
+        }
+    };
+
+    let mut fields = dynamic_message_fields(&envelope);
+    let mut decoded_count = 0usize;
+    let mut unknown_count = 0usize;
+    let mut details = Vec::new();
+
+    for (index, item_value) in items.iter().enumerate() {
+        let Value::Message(item) = item_value else {
+            unknown_count += 1;
+            details.push(format!("messageList[{index}] is not a message"));
+            continue;
+        };
+
+        let message_type = item
+            .get_field_by_name("messageType")
+            .and_then(|value| integer_value(value.as_ref()))
+            .map(|value| value as i32);
+        let payload_version = item
+            .get_field_by_name("messagePayloadVersion")
+            .and_then(|value| integer_value(value.as_ref()))
+            .map(|value| value.max(1) as u32)
+            .unwrap_or(1);
+        let payload = item
+            .get_field_by_name("payload")
+            .and_then(|value| match value.as_ref() {
+                Value::Bytes(bytes) => Some(bytes.to_vec()),
+                _ => None,
+            });
+
+        let Some(message_type) = message_type else {
+            unknown_count += 1;
+            details.push(format!("messageList[{index}] has no messageType"));
+            continue;
+        };
+        let Some(payload) = payload else {
+            unknown_count += 1;
+            details.push(format!("messageList[{index}] has no bytes payload"));
+            continue;
+        };
+
+        let descriptor =
+            match registry.find_company_message_for_event(event, message_type, payload_version) {
+                Ok(descriptor) => descriptor,
+                Err(error) => {
+                    unknown_count += 1;
+                    details.push(format!("messageList[{index}]: {error}"));
+                    continue;
+                }
+            };
+
+        let Some(descriptor) = descriptor else {
+            unknown_count += 1;
+            details.push(format!(
+                "messageList[{index}] has no descriptor for type {message_type} version {payload_version}"
+            ));
+            continue;
+        };
+
+        match DynamicMessage::decode(descriptor.clone(), payload.as_slice()) {
+            Ok(message) => {
+                fields.push(ProtobufFieldPreview {
+                    field_number: item
+                        .descriptor()
+                        .get_field_by_name("payload")
+                        .map(|field| field.number())
+                        .unwrap_or_default(),
+                    field_name: Some(format!(
+                        "messageList[{index}].payload ({})",
+                        descriptor.full_name()
+                    )),
+                    wire_type: 2,
+                    wire_type_name: "company-message-payload".to_owned(),
+                    value_preview: format!(
+                        "type {message_type}, version {payload_version}, {} bytes",
+                        payload.len()
+                    ),
+                    nested_fields: dynamic_message_fields(&message),
+                });
+                decoded_count += 1;
+            }
+            Err(error) => {
+                unknown_count += 1;
+                details.push(format!(
+                    "messageList[{index}] failed to decode type {message_type} version {payload_version} as {}: {error}",
+                    descriptor.full_name()
+                ));
+            }
+        }
+    }
+
+    let mut status = format!(
+        "Decoded company packet {} with {decoded_count}/{} nested message(s).",
+        envelope_descriptor.full_name(),
+        items.len()
+    );
+    if unknown_count > 0 {
+        status.push_str(&format!(
+            " {unknown_count} nested message(s) were not decoded."
+        ));
+    }
+    if !details.is_empty() {
+        status.push_str(" ");
+        status.push_str(&details.join("; "));
+    }
+    if truncated {
+        status.push_str(&format!(
+            " Payload sample was truncated at {capture_limit} bytes."
+        ));
+    }
+
+    Some(PayloadDecode {
+        direction: Some(direction_name(&event.direction).to_owned()),
+        status,
+        schema_message: Some(envelope_descriptor.full_name().to_owned()),
+        json_previews: Vec::new(),
+        fields,
+    })
+}
+
+fn integer_value(value: &Value) -> Option<i64> {
+    match value {
+        Value::I32(value) => Some(i64::from(*value)),
+        Value::I64(value) => Some(*value),
+        Value::U32(value) => Some(i64::from(*value)),
+        Value::U64(value) => i64::try_from(*value).ok(),
+        Value::EnumNumber(value) => Some(i64::from(*value)),
+        _ => None,
+    }
 }
 
 fn decode_payload_as_message(
@@ -1435,7 +1818,7 @@ impl HttpExchangeBuilder {
         }
     }
 
-    fn build(self) -> Option<HttpExchange> {
+    fn build(self, schemas: &[ProtoSchemaBundle]) -> Option<HttpExchange> {
         let request = self.request?;
         let response = self.response;
         let completed_at_unix_ms = response.as_ref().map(|event| event.timestamp_unix_ms);
@@ -1479,6 +1862,8 @@ impl HttpExchangeBuilder {
             response
                 .as_ref()
                 .and_then(|event| event.body_capture.as_ref()),
+            response.as_ref().unwrap_or(&request),
+            schemas,
         );
         let anomalies = detect_http_anomalies(
             status,
@@ -1641,6 +2026,8 @@ fn decode_payload_preview(
     payload_hint: &PayloadHint,
     request_capture: Option<&BodyCapture>,
     response_capture: Option<&BodyCapture>,
+    event: &ProxyEvent,
+    schemas: &[ProtoSchemaBundle],
 ) -> PayloadDecode {
     if !matches!(payload_hint.likely_protocol.as_str(), "protobuf" | "grpc") {
         if payload_hint.likely_protocol == "json" {
@@ -1699,6 +2086,16 @@ fn decode_payload_preview(
     } else {
         capture.bytes.as_slice()
     };
+
+    if let Some(company_decode) = decode_company_packet_payload(
+        decode_input,
+        event,
+        schemas,
+        capture.truncated,
+        capture.capture_limit,
+    ) {
+        return company_decode;
+    }
 
     match protobuf_wire_preview(decode_input, 32) {
         Ok(fields) if fields.is_empty() => PayloadDecode {
@@ -2516,6 +2913,61 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{company_message_mappings_from_descriptor_set, company_message_version};
+
+    fn varint(mut value: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            bytes.push(byte);
+            if value == 0 {
+                return bytes;
+            }
+        }
+    }
+
+    fn length_delimited(field_number: u32, value: &[u8]) -> Vec<u8> {
+        let mut bytes = varint(u64::from(field_number) << 3 | 2);
+        bytes.extend(varint(value.len() as u64));
+        bytes.extend(value);
+        bytes
+    }
+
+    #[test]
+    fn company_message_version_reads_versioned_names() {
+        assert_eq!(company_message_version("GetDataResponseV3Proto"), 3);
+        assert_eq!(company_message_version("KeepAliveProto"), 1);
+        assert_eq!(company_message_version("VerifyTOTPResponseProto"), 1);
+    }
+
+    #[test]
+    fn company_message_mappings_read_generator_ordinals() {
+        let mut options = varint(u64::from(50009u32) << 3);
+        options.extend(varint(84));
+
+        let mut file = length_delimited(2, b"com.example");
+        file.extend(length_delimited(8, &options));
+        file.extend(length_delimited(
+            4,
+            &length_delimited(1, b"ExampleResponseV2Proto"),
+        ));
+
+        let descriptor_set = length_delimited(1, &file);
+        let mappings = company_message_mappings_from_descriptor_set(&descriptor_set).unwrap();
+
+        assert_eq!(
+            mappings.get(&(42, 2)),
+            Some(&vec!["com.example.ExampleResponseV2Proto".to_owned()])
+        );
+    }
 }
 
 fn load_or_create_persistent_ca(

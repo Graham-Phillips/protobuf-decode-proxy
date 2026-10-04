@@ -299,11 +299,15 @@ app.innerHTML = `
         <section class="detail-panel" aria-label="Selected exchange">
           <div class="panel-heading">
             <h2>Traffic Detail</h2>
-            <span id="selected-exchange-kind" class="small-value">No selection</span>
+            <div class="detail-heading-actions">
+              <span id="selected-exchange-kind" class="small-value">No selection</span>
+              <button id="copy-selected-traffic" class="quiet-button" type="button" disabled>Copy</button>
+            </div>
           </div>
           <div id="exchange-detail" class="detail-content">
             Select a traffic row to inspect request, response, payload preview, and findings.
           </div>
+          <p id="selected-copy-status" class="status-message" role="status" aria-live="polite"></p>
         </section>
 
         <details class="diagnostics-panel">
@@ -580,6 +584,8 @@ const workspaceViews = document.querySelectorAll<HTMLElement>('.workspace-view')
 const viewButtons = document.querySelectorAll<HTMLButtonElement>('.view-button')
 const sortHeaderButtons = document.querySelectorAll<HTMLButtonElement>('.sort-header')
 const selectedExchangeKind = document.querySelector<HTMLElement>('#selected-exchange-kind')!
+const copySelectedTrafficButton = document.querySelector<HTMLButtonElement>('#copy-selected-traffic')!
+const selectedCopyStatus = document.querySelector<HTMLElement>('#selected-copy-status')!
 const exchangeDetail = document.querySelector<HTMLElement>('#exchange-detail')!
 const heatmapGrid = document.querySelector<HTMLElement>('#heatmap-grid')!
 const schemaChip = document.querySelector<HTMLElement>('#schema-chip')!
@@ -596,6 +602,7 @@ let selectedWebSocketPreviewId: string | null = null
 let selectedTrafficKey: string | null = null
 let selectedWebSocketDecode: PayloadDecode | null = null
 let selectedWebSocketDecodeMessage = ''
+let selectedInspectorSignature: string | null = null
 let editingWebSocketMappingId: string | null = null
 let activeWorkspace: Workspace = 'traffic'
 let activeView: TrafficView = 'table'
@@ -720,12 +727,14 @@ function renderSelectedWebSocketPreview() {
 
   if (!preview) {
     selectedExchangeKind.textContent = 'No selection'
+    copySelectedTrafficButton.disabled = true
     selectedWebSocketDecode = null
     exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and findings.'
     return
   }
 
   selectedExchangeKind.textContent = preview.payload_hint.likely_protocol
+  copySelectedTrafficButton.disabled = false
   const activeDecode = selectedWebSocketDecode ?? preview.payload_decode
   renderProtoMessageOptions(messageNamesForPreview(preview))
   exchangeDetail.innerHTML = `
@@ -765,15 +774,7 @@ function renderSelectedWebSocketPreview() {
       <div><dt>Connection</dt><dd>${escapeHtml(preview.connection_id)}</dd></div>
       <div><dt>Captured</dt><dd>${formatTime(preview.timestamp_unix_ms)}</dd></div>
     </dl>
-    ${jsonPreviewPanel(activeDecode)}
-    <div class="decode-preview">
-      <div class="panel-heading">
-        <h3>Payload Preview</h3>
-        <span class="small-value">${escapeHtml(activeDecode.schema_message ?? activeDecode.direction ?? 'No payload')}</span>
-      </div>
-      <p>${escapeHtml(activeDecode.status)}</p>
-      ${protobufFieldTable(activeDecode.fields)}
-    </div>
+    ${payloadDecodePanel(activeDecode)}
   `
   bindWebSocketDecodeControls(preview)
 }
@@ -833,9 +834,17 @@ function renderSelectedTraffic() {
     selectedWebSocketPreviewId = null
     selectedWebSocketDecode = null
     selectedExchangeKind.textContent = 'No selection'
+    copySelectedTrafficButton.disabled = true
     exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and findings.'
+    selectedInspectorSignature = 'none'
     return
   }
+
+  const signature = JSON.stringify({ row, selectedWebSocketDecode })
+  if (signature === selectedInspectorSignature) {
+    return
+  }
+  selectedInspectorSignature = signature
 
   if (row.kind === 'http') {
     selectedExchangeId = row.exchange.id
@@ -848,16 +857,60 @@ function renderSelectedTraffic() {
   }
 }
 
+function selectedTrafficCopyText() {
+  const row = trafficRows().find((candidate) => trafficRowKey(candidate) === selectedTrafficKey)
+  if (!row) {
+    return null
+  }
+
+  const payloadDecode = row.kind === 'http'
+    ? row.exchange.payload_decode
+    : selectedWebSocketDecode ?? row.preview.payload_decode
+  const applicationMessages = applicationMessageEntries(payloadDecode).map((message) => ({
+    messageType: friendlyMessageName(message.messageName),
+    protobufType: message.messageName,
+    fields: protobufFieldsToObject(message.fields),
+  }))
+
+  return JSON.stringify({
+    messageType: payloadDecode.schema_message ? friendlyMessageName(payloadDecode.schema_message) : null,
+    protobufType: payloadDecode.schema_message,
+    status: payloadDecode.status,
+    direction: row.kind === 'http' ? payloadDecode.direction : directionLabel(row.preview.direction),
+    target: trafficRowHost(row),
+    path: row.kind === 'http' ? row.exchange.path : row.preview.path,
+    messages: applicationMessages.length > 0 ? applicationMessages : protobufFieldsToObject(payloadDecode.fields),
+  }, null, 2)
+}
+
+async function copyTextToClipboard(value: string) {
+  try {
+    await navigator.clipboard.writeText(value)
+    return
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = value
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    textarea.remove()
+  }
+}
+
 function renderSelectedExchange() {
   const exchange = latestExchanges.find((item) => item.id === selectedExchangeId)
 
   if (!exchange) {
     selectedExchangeKind.textContent = 'No selection'
+    copySelectedTrafficButton.disabled = true
     exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and findings.'
     return
   }
 
   selectedExchangeKind.textContent = exchange.payload_hint.likely_protocol
+  copySelectedTrafficButton.disabled = false
   exchangeDetail.innerHTML = `
     <div class="traffic-detail-split">
       <section class="detail-pane">
@@ -888,15 +941,7 @@ function renderSelectedExchange() {
         </dl>
       </section>
     </div>
-    ${jsonPreviewPanel(exchange.payload_decode)}
-    <div class="decode-preview">
-      <div class="panel-heading">
-        <h3>Payload Preview</h3>
-        <span class="small-value">${escapeHtml(exchange.payload_decode.schema_message ?? exchange.payload_decode.direction ?? 'No payload')}</span>
-      </div>
-      <p>${escapeHtml(exchange.payload_decode.status)}</p>
-      ${protobufFieldTable(exchange.payload_decode.fields)}
-    </div>
+    ${payloadDecodePanel(exchange.payload_decode)}
   `
 }
 
@@ -924,6 +969,119 @@ function jsonPreviewPanel(payloadDecode: PayloadDecode) {
         .join('')}
     </div>
   `
+}
+
+function payloadDecodePanel(payloadDecode: PayloadDecode) {
+  const applicationMessages = applicationMessageEntries(payloadDecode)
+
+  if (applicationMessages.length === 0) {
+    return `
+      ${jsonPreviewPanel(payloadDecode)}
+      <div class="decode-preview">
+        <div class="panel-heading">
+          <h3>Payload Preview</h3>
+          <span class="small-value">${escapeHtml(payloadDecode.schema_message ?? payloadDecode.direction ?? 'No payload')}</span>
+        </div>
+        <p>${escapeHtml(payloadDecode.status)}</p>
+        ${protobufFieldTable(payloadDecode.fields)}
+      </div>
+    `
+  }
+
+  const messageJson = applicationMessages.map((message) => ({
+    messageType: friendlyMessageName(message.messageName),
+    protobufType: message.messageName,
+    fields: protobufFieldsToObject(message.fields),
+  }))
+
+  return `
+    ${jsonPreviewPanel(payloadDecode)}
+    <div class="decode-preview">
+      <div class="panel-heading">
+        <h3>Decoded protobuf messages</h3>
+        <span class="small-value">${applicationMessages.length} message${applicationMessages.length === 1 ? '' : 's'}</span>
+      </div>
+      <p>${escapeHtml(payloadDecode.status)}</p>
+      <pre class="decoded-json" aria-label="Decoded protobuf messages">${escapeHtml(JSON.stringify(messageJson, null, 2))}</pre>
+      <details class="raw-protobuf-preview">
+        <summary>Raw envelope fields</summary>
+        ${protobufFieldTable(payloadDecode.fields)}
+      </details>
+    </div>
+  `
+}
+
+function applicationMessageEntries(payloadDecode: PayloadDecode) {
+  return payloadDecode.fields.flatMap((field) => {
+    const match = field.field_name?.match(/^messageList\[\d+\]\.payload \((.+)\)$/)
+    return match ? [{ messageName: match[1], fields: field.nested_fields }] : []
+  })
+}
+
+function friendlyMessageName(messageName: string) {
+  const shortName = shortMessageName(messageName)
+  if (shortName.startsWith('StreamingActiveOrders')) {
+    return 'Open Orders Streaming Update'
+  }
+
+  return shortName.replace(/Proto$/, '')
+}
+
+function protobufFieldsToObject(fields: ProtobufFieldPreview[]): Record<string, unknown> {
+  const object: Record<string, unknown> = {}
+
+  for (const field of fields) {
+    const name = field.field_name ?? `field_${field.field_number}`
+    const repeatedChildren = field.nested_fields.filter((child) => child.field_name?.startsWith(`${name}[`))
+
+    if (repeatedChildren.length > 0) {
+      object[name] = protobufRepeatedFieldsToValue(repeatedChildren)
+    } else if (field.nested_fields.length > 0) {
+      object[name] = protobufFieldsToObject(field.nested_fields)
+    } else {
+      object[name] = protobufPreviewValue(field.value_preview)
+    }
+  }
+
+  return object
+}
+
+function protobufRepeatedFieldsToValue(fields: ProtobufFieldPreview[]) {
+  const indexed = fields
+    .map((field) => ({
+      field,
+      index: Number(field.field_name?.match(/\[(\d+)\]$/)?.[1] ?? -1),
+    }))
+    .filter((entry) => entry.index >= 0)
+    .sort((left, right) => left.index - right.index)
+
+  if (indexed.length !== fields.length) {
+    return fields.map((field) => protobufPreviewValue(field.value_preview))
+  }
+
+  return indexed.map(({ field }) => field.nested_fields.length > 0
+    ? protobufFieldsToObject(field.nested_fields)
+    : protobufPreviewValue(field.value_preview))
+}
+
+function protobufPreviewValue(value: string): unknown {
+  if (value === 'true' || value === 'false') {
+    return value === 'true'
+  }
+
+  if (/^-?\d+(\.\d+)?$/.test(value)) {
+    return Number(value)
+  }
+
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      return JSON.parse(value)
+    } catch {
+      return value
+    }
+  }
+
+  return value
 }
 
 function protobufFieldTable(fields: ProtobufFieldPreview[]) {
@@ -2123,6 +2281,25 @@ copyCommandButtons.forEach((button) => {
   })
 })
 
+copySelectedTrafficButton.addEventListener('click', async () => {
+  const text = selectedTrafficCopyText()
+  if (!text) {
+    selectedCopyStatus.textContent = 'Select a traffic message first.'
+    return
+  }
+
+  copySelectedTrafficButton.disabled = true
+  selectedCopyStatus.textContent = ''
+  try {
+    await copyTextToClipboard(text)
+    selectedCopyStatus.textContent = 'Selected message copied.'
+  } catch (error) {
+    selectedCopyStatus.textContent = `Copy failed: ${String(error)}`
+  } finally {
+    copySelectedTrafficButton.disabled = false
+  }
+})
+
 loadDescriptorSetButton.addEventListener('click', async () => {
   const path = descriptorSetPath.value.trim()
   const name = descriptorBundleName.value.trim() || shortDescriptorName(path)
@@ -2242,6 +2419,7 @@ trafficMessages.addEventListener('click', (event) => {
 
   selectedTrafficKey = row.dataset.trafficKey ?? null
   selectedWebSocketDecode = null
+  selectedCopyStatus.textContent = ''
   renderTrafficMessages()
   renderSelectedTraffic()
 })
@@ -2318,6 +2496,7 @@ exchangeTimeline.addEventListener('click', (event) => {
   }
 
   selectedTrafficKey = `http:${row.dataset.exchangeId ?? ''}`
+  selectedCopyStatus.textContent = ''
   renderTrafficMessages()
   renderTimeline()
   renderSelectedTraffic()
@@ -2332,6 +2511,8 @@ clearCaptureButton.addEventListener('click', async () => {
     selectedWebSocketPreviewId = null
     selectedTrafficKey = null
     selectedWebSocketDecode = null
+    selectedInspectorSignature = null
+    selectedCopyStatus.textContent = ''
     autoScrollExchanges = true
     await refresh()
   } finally {

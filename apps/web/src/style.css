@@ -299,6 +299,12 @@ h3 {
   gap: 12px;
 }
 
+.detail-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .workbench-toolbar {
   margin-bottom: 12px;
 }
@@ -1059,6 +1065,34 @@ h3 {
 
 .json-preview-block {
   margin-top: 10px;
+}
+
+.decoded-json {
+  max-height: 520px;
+  margin: 10px 0 0;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f8fafb;
+  color: var(--text);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.raw-protobuf-preview {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.raw-protobuf-preview > summary {
+  padding: 10px 0;
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .json-preview-heading {

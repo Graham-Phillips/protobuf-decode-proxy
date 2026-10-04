@@ -202,6 +202,13 @@ impl<'a> ProtoDecoderRegistry<'a> {
         match candidates.as_slice() {
             [] => Ok(None),
             [candidate] => Ok(Some(candidate.clone())),
+            candidates if candidates
+                .iter()
+                .skip(1)
+                .all(|candidate| message_descriptor_shape(candidate) == message_descriptor_shape(&candidates[0])) =>
+            {
+                Ok(Some(candidates[0].clone()))
+            }
             candidates => Err(format!(
                 "application protobuf message type {message_type} version {payload_version} is ambiguous: {}",
                 candidates
@@ -212,6 +219,24 @@ impl<'a> ProtoDecoderRegistry<'a> {
             )),
         }
     }
+}
+
+fn message_descriptor_shape(
+    descriptor: &prost_reflect::MessageDescriptor,
+) -> Vec<(i32, String, String, String)> {
+    let mut fields = descriptor
+        .fields()
+        .map(|field| {
+            (
+                field.number(),
+                field.name().to_owned(),
+                format!("{:?}", field.kind()),
+                format!("{:?}", field.cardinality()),
+            )
+        })
+        .collect::<Vec<_>>();
+    fields.sort_by_key(|field| field.0);
+    fields
 }
 
 #[derive(Deserialize)]
@@ -1569,6 +1594,8 @@ fn decode_application_packet_payload(
             " Payload sample was truncated at {capture_limit} bytes."
         ));
     }
+
+    let decoded_message_names = decoded_message_names.into_iter().collect::<BTreeSet<_>>();
 
     Some(PayloadDecode {
         direction: Some(direction_name(&event.direction).to_owned()),

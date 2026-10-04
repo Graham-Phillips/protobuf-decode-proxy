@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "release": "node ../../scripts/bump-version.mjs && tauri build",
     "preview": "vite preview",
     "tauri": "tauri"
   },

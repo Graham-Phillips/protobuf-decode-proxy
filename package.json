@@ -1,4 +1,8 @@
 {
   "name": "protobuf-decoder",
-  "private": true
+  "private": true,
+  "scripts": {
+    "version:minor": "node scripts/bump-version.mjs",
+    "release": "pnpm --dir apps/web release"
+  }
 }

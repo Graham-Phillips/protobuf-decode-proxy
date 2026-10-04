@@ -168,7 +168,7 @@ impl<'a> ProtoDecoderRegistry<'a> {
             })
     }
 
-    fn find_company_message_for_event(
+    fn find_application_message_for_event(
         &self,
         event: &ProxyEvent,
         message_type: i32,
@@ -189,7 +189,7 @@ impl<'a> ProtoDecoderRegistry<'a> {
             .iter()
             .flat_map(|schema| {
                 schema
-                    .company_message_mappings
+                    .application_message_mappings
                     .get(&(message_type, payload_version))
                     .into_iter()
                     .flat_map(|names| names.iter())
@@ -203,7 +203,7 @@ impl<'a> ProtoDecoderRegistry<'a> {
             [] => Ok(None),
             [candidate] => Ok(Some(candidate.clone())),
             candidates => Err(format!(
-                "company protobuf message type {message_type} version {payload_version} is ambiguous: {}",
+                "application protobuf message type {message_type} version {payload_version} is ambiguous: {}",
                 candidates
                     .iter()
                     .map(|candidate| candidate.full_name())
@@ -268,8 +268,8 @@ struct ProtoSchemaStatus {
     file_count: usize,
     message_count: usize,
     service_count: usize,
-    company_mapping_count: usize,
-    company_mapping_examples: Vec<String>,
+    application_mapping_count: usize,
+    application_mapping_examples: Vec<String>,
     sample_messages: Vec<String>,
     message_names: Vec<String>,
 }
@@ -279,7 +279,7 @@ struct ProtoSchemaBundle {
     host_match_value: Option<String>,
     path_prefix: Option<String>,
     pool: DescriptorPool,
-    company_message_mappings: BTreeMap<(i32, u32), Vec<String>>,
+    application_message_mappings: BTreeMap<(i32, u32), Vec<String>>,
     status: ProtoSchemaStatus,
 }
 
@@ -900,7 +900,7 @@ fn load_proto_descriptor_bundle(
         .map_err(|error| format!("failed to read protobuf descriptor set: {error}"))?;
     let pool = DescriptorPool::decode(bytes.as_slice())
         .map_err(|error| format!("failed to parse protobuf descriptor set: {error}"))?;
-    let company_message_mappings = company_message_mappings_from_descriptor_set(&bytes)?;
+    let application_message_mappings = application_message_mappings_from_descriptor_set(&bytes)?;
     let host_match_type = parse_host_match_type(&host_match_type)?;
     let host_match_value = normalize_optional_string(host_match_value);
     if !matches!(host_match_type, HostMatchType::Any) && host_match_value.is_none() {
@@ -931,14 +931,15 @@ fn load_proto_descriptor_bundle(
         path_prefix.clone(),
         &pool,
     );
-    status.company_mapping_count = company_message_mappings.len();
-    status.company_mapping_examples = company_message_mapping_examples(&company_message_mappings);
+    status.application_mapping_count = application_message_mappings.len();
+    status.application_mapping_examples =
+        application_message_mapping_examples(&application_message_mappings);
     schemas.push(ProtoSchemaBundle {
         host_match_type,
         host_match_value,
         path_prefix,
         pool,
-        company_message_mappings,
+        application_message_mappings,
         status: status.clone(),
     });
 
@@ -951,7 +952,7 @@ enum DescriptorWireValue {
     Bytes(Vec<u8>),
 }
 
-fn company_message_mappings_from_descriptor_set(
+fn application_message_mappings_from_descriptor_set(
     bytes: &[u8],
 ) -> Result<BTreeMap<(i32, u32), Vec<String>>, String> {
     let mut mappings = BTreeMap::<(i32, u32), Vec<String>>::new();
@@ -1026,7 +1027,7 @@ fn company_message_mappings_from_descriptor_set(
                 format!("{package}.{name}")
             };
             mappings
-                .entry((ordinal, company_message_version(&name)))
+                .entry((ordinal, application_message_version(&name)))
                 .or_default()
                 .push(full_name);
         }
@@ -1092,7 +1093,7 @@ fn descriptor_wire_fields(mut bytes: &[u8]) -> Result<Vec<(u32, DescriptorWireVa
     Ok(fields)
 }
 
-fn company_message_version(name: &str) -> u32 {
+fn application_message_version(name: &str) -> u32 {
     let Some(name) = name.strip_suffix("Proto") else {
         return 1;
     };
@@ -1134,7 +1135,7 @@ async fn export_decoded_websocket_message(
     decoded.warnings = vec![
         "This export can contain real hostnames, paths, proto field names, and decoded values."
             .to_owned(),
-        "Review company policy before moving this file off-network.".to_owned(),
+        "Review data handling policy before moving this file off-network.".to_owned(),
     ];
     let json = serde_json::to_string_pretty(&decoded)
         .map_err(|error| format!("failed to serialize decoded message export: {error}"))?;
@@ -1425,9 +1426,9 @@ fn decode_websocket_payload_with_mapping(
     }))
 }
 
-const COMPANY_PACKET_MESSAGE: &str = "com.cmcmarkets.iphone.transport.protos.iPhonePacketProto";
+const APPLICATION_PACKET_MESSAGE: &str = "com.cmcmarkets.iphone.transport.protos.iPhonePacketProto";
 
-fn decode_company_packet_payload(
+fn decode_application_packet_payload(
     bytes: &[u8],
     event: &ProxyEvent,
     schemas: &[ProtoSchemaBundle],
@@ -1435,7 +1436,7 @@ fn decode_company_packet_payload(
     capture_limit: usize,
 ) -> Option<PayloadDecode> {
     let registry = ProtoDecoderRegistry::new(schemas);
-    let envelope_descriptor = registry.find_message_for_event(event, COMPANY_PACKET_MESSAGE)?;
+    let envelope_descriptor = registry.find_message_for_event(event, APPLICATION_PACKET_MESSAGE)?;
     let envelope = match DynamicMessage::decode(envelope_descriptor.clone(), bytes) {
         Ok(envelope) => envelope,
         Err(_) => return None,
@@ -1448,7 +1449,8 @@ fn decode_company_packet_payload(
         _ => {
             return Some(PayloadDecode {
                 direction: Some(direction_name(&event.direction).to_owned()),
-                status: "Company protobuf packet has a non-repeated messageList field.".to_owned(),
+                status: "Application protobuf packet has a non-repeated messageList field."
+                    .to_owned(),
                 schema_message: Some(envelope_descriptor.full_name().to_owned()),
                 json_previews: Vec::new(),
                 fields: dynamic_message_fields(&envelope),
@@ -1497,7 +1499,8 @@ fn decode_company_packet_payload(
         };
 
         let descriptor =
-            match registry.find_company_message_for_event(event, message_type, payload_version) {
+            match registry.find_application_message_for_event(event, message_type, payload_version)
+            {
                 Ok(descriptor) => descriptor,
                 Err(error) => {
                     unknown_count += 1;
@@ -1527,7 +1530,7 @@ fn decode_company_packet_payload(
                         descriptor.full_name()
                     )),
                     wire_type: 2,
-                    wire_type_name: "company-message-payload".to_owned(),
+                    wire_type_name: "application-message-payload".to_owned(),
                     value_preview: format!(
                         "type {message_type}, version {payload_version}, {} bytes",
                         payload.len()
@@ -1548,7 +1551,7 @@ fn decode_company_packet_payload(
     }
 
     let mut status = format!(
-        "Decoded company packet {} with {decoded_count}/{} nested message(s).",
+        "Decoded application packet {} with {decoded_count}/{} nested message(s).",
         envelope_descriptor.full_name(),
         items.len()
     );
@@ -2099,14 +2102,14 @@ fn decode_payload_preview(
     if matches!(payload_hint.likely_protocol.as_str(), "protobuf" | "grpc")
         || (!looks_like_text(decode_input) && !schemas.is_empty())
     {
-        if let Some(company_decode) = decode_company_packet_payload(
+        if let Some(application_decode) = decode_application_packet_payload(
             decode_input,
             event,
             schemas,
             capture.truncated,
             capture.capture_limit,
         ) {
-            return company_decode;
+            return application_decode;
         }
     }
 
@@ -2784,14 +2787,16 @@ fn proto_schema_status_from_pool(
         file_count: pool.files().count(),
         message_count: message_names.len(),
         service_count: pool.services().count(),
-        company_mapping_count: 0,
-        company_mapping_examples: Vec::new(),
+        application_mapping_count: 0,
+        application_mapping_examples: Vec::new(),
         sample_messages,
         message_names,
     }
 }
 
-fn company_message_mapping_examples(mappings: &BTreeMap<(i32, u32), Vec<String>>) -> Vec<String> {
+fn application_message_mapping_examples(
+    mappings: &BTreeMap<(i32, u32), Vec<String>>,
+) -> Vec<String> {
     mappings
         .iter()
         .flat_map(|((message_type, version), names)| {
@@ -2954,7 +2959,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{company_message_mappings_from_descriptor_set, company_message_version};
+    use super::{application_message_mappings_from_descriptor_set, application_message_version};
 
     fn varint(mut value: u64) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -2979,14 +2984,14 @@ mod tests {
     }
 
     #[test]
-    fn company_message_version_reads_versioned_names() {
-        assert_eq!(company_message_version("GetDataResponseV3Proto"), 3);
-        assert_eq!(company_message_version("KeepAliveProto"), 1);
-        assert_eq!(company_message_version("VerifyTOTPResponseProto"), 1);
+    fn application_message_version_reads_versioned_names() {
+        assert_eq!(application_message_version("GetDataResponseV3Proto"), 3);
+        assert_eq!(application_message_version("KeepAliveProto"), 1);
+        assert_eq!(application_message_version("VerifyTOTPResponseProto"), 1);
     }
 
     #[test]
-    fn company_message_mappings_read_generator_ordinals() {
+    fn application_message_mappings_read_generator_ordinals() {
         let mut options = varint(u64::from(50009u32) << 3);
         options.extend(varint(84));
 
@@ -2998,7 +3003,7 @@ mod tests {
         ));
 
         let descriptor_set = length_delimited(1, &file);
-        let mappings = company_message_mappings_from_descriptor_set(&descriptor_set).unwrap();
+        let mappings = application_message_mappings_from_descriptor_set(&descriptor_set).unwrap();
 
         assert_eq!(
             mappings.get(&(42, 2)),

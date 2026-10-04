@@ -1,7 +1,7 @@
-# Company Protobuf Descriptor Set
+# Application Protobuf Descriptor Set
 
 The app loads a compiled protobuf `FileDescriptorSet`; it does not compile
-`.proto` files at runtime. The company sources must be compiled with imports
+`.proto` files at runtime. The application sources must be compiled with imports
 included so the envelope, payload messages, and `generator.message_type_ordinal`
 metadata are available to the Rust decoder.
 
@@ -29,14 +29,14 @@ if ($LASTEXITCODE -ne 0) {
 ```
 
 Load the resulting `target\mobile-server-api.pb` in the app's **Schemas**
-workspace. The status should report company type/version mappings. For example,
+workspace. The status should report application type/version mappings. For example,
 ordinal `43` has versioned `GetDataResponseV2Proto` and
 `GetDataResponseV3Proto` descriptors.
 
-The app's company decoder follows the client behavior in `wfe-network-types`:
+The app's application decoder follows the client behavior in `wfe-network-types`:
 it decodes `iPhonePacketProto`, reads each inner `messageType` and
 `messagePayloadVersion`, then decodes the raw `payload` with the matching
-versioned descriptor. Unknown or non-company protobufs retain the wire preview
+versioned descriptor. Unknown or non-application protobufs retain the wire preview
 fallback.
 
 Do not copy generated JavaScript or Java model code into this repository. Those

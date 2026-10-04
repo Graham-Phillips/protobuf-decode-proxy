@@ -23,11 +23,11 @@ types in the table, then select one to inspect decoded field names and contents.
 ## Current decoding evidence
 
 - `C:\Work2\GP\protos` and `C:\Work2\GP\mobile-server-api\mobile-server-api\src\protos`
-  contain the company `.proto` sources, including `generator/descriptor.proto`,
+  contain the application `.proto` sources, including `generator/descriptor.proto`,
   `iPhonePacketProto`, and versioned payload messages such as
   `GetDataResponseV2Proto` and `GetDataResponseV3Proto`.
 - The existing `mockdata\protbuf.pb` is a usable `FileDescriptorSet` containing
-  the company envelope and ordinal metadata. The server/client mapping confirms
+  the application envelope and ordinal metadata. The server/client mapping confirms
   that one ordinal can select several payload versions; ordinal `43` is the
   concrete example.
 - The URL Generator decodes the outer `iPhonePacketProto`, then selects the
@@ -47,7 +47,7 @@ types in the table, then select one to inspect decoded field names and contents.
   selection, message-type mapping, decoding, and UI rendering. Identify exactly
   where it falls back to the wire preview.
 - [x] Verify the existing descriptor and mapping paths before adding another
-  decoding mechanism. Check company envelope ordinals/versions and WebSocket
+  decoding mechanism. Check application envelope ordinals/versions and WebSocket
   rules where applicable; do not assume all traffic uses those formats.
 - [ ] Turn the captured sample into a regression fixture once its expected
   message type and contents are established.

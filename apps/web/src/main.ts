@@ -130,8 +130,8 @@ type ProtoSchemaStatus = {
   file_count: number
   message_count: number
   service_count: number
-  company_mapping_count: number
-  company_mapping_examples: string[]
+  application_mapping_count: number
+  application_mapping_examples: string[]
   sample_messages: string[]
   message_names: string[]
 }
@@ -1521,17 +1521,17 @@ function renderProtoSchemaStatus(status: ProtoSchemaStatus | null) {
 
   protoSchemaSummary.textContent = `${status.message_count} messages`
   schemaChip.textContent = `${status.message_count} schema messages`
-  const mappingSummary = status.company_mapping_count > 0
-    ? ` ${status.company_mapping_count} company type/version mappings found.`
-    : ' No company ordinal mappings found.'
+  const mappingSummary = status.application_mapping_count > 0
+    ? ` ${status.application_mapping_count} application type/version mappings found.`
+    : ' No application ordinal mappings found.'
   protoSchemaStatus.textContent = `Loaded ${status.file_count} files, ${status.message_count} messages, ${status.service_count} services from ${status.source_path}.${mappingSummary}`
   protoMessageSamples.innerHTML = status.sample_messages
     .map((messageName) => `<li>${escapeHtml(messageName)}</li>`)
     .join('')
-  if (status.company_mapping_examples.length > 0) {
+  if (status.application_mapping_examples.length > 0) {
     protoMessageSamples.insertAdjacentHTML(
       'afterbegin',
-      `<li class="schema-mapping-note">${escapeHtml(status.company_mapping_examples[0])}</li>`,
+      `<li class="schema-mapping-note">${escapeHtml(status.application_mapping_examples[0])}</li>`,
     )
   }
   renderProtoMessageOptions(status.message_names)

@@ -130,6 +130,8 @@ type ProtoSchemaStatus = {
   file_count: number
   message_count: number
   service_count: number
+  company_mapping_count: number
+  company_mapping_examples: string[]
   sample_messages: string[]
   message_names: string[]
 }
@@ -503,15 +505,16 @@ app.innerHTML = `
         <section class="tool-panel">
           <h2>Browser Setup</h2>
           <details open>
-            <summary>Browser commands</summary>
+            <summary>PowerShell commands (Windows)</summary>
+            <p class="command-language">Run these commands in PowerShell. Each command uses an isolated browser profile.</p>
             <div class="command-list" aria-label="Browser launch commands">
               <div class="command-row">
-                <span>Edge profile</span>
+                <span>Edge profile · PowerShell</span>
                 <code id="edge-command">-</code>
                 <button class="copy-command" type="button" data-copy-target="edge-command">Copy</button>
               </div>
               <div class="command-row">
-                <span>Chrome profile</span>
+                <span>Chrome profile · PowerShell</span>
                 <code id="chrome-command">-</code>
                 <button class="copy-command" type="button" data-copy-target="chrome-command">Copy</button>
               </div>
@@ -774,7 +777,7 @@ function renderWebSocketMessagePreviews(previews: WebSocketMessagePreview[]) {
         <td>${serverBadge(preview.authority)}</td>
         <td>${payloadLabel(preview.payload_hint)}</td>
         <td>${byteLabel(preview.body_len)}</td>
-        <td>${escapeHtml(preview.payload_decode.status)}</td>
+        <td>${decodeLabel(preview.payload_decode)}</td>
       </tr>
     `)
     .join('')
@@ -877,7 +880,7 @@ function renderHttpExchanges() {
         <td>${durationLabel(exchange.duration_ms)}</td>
         <td>${escapeHtml(exchange.method ?? '-')}</td>
         <td>${serverBadge(exchange.authority)}</td>
-        <td>${escapeHtml(exchange.payload_decode.status)}</td>
+        <td>${decodeLabel(exchange.payload_decode)}</td>
         <td>${anomalyLabels(exchange.anomalies)}</td>
       </tr>
     `)
@@ -1518,10 +1521,19 @@ function renderProtoSchemaStatus(status: ProtoSchemaStatus | null) {
 
   protoSchemaSummary.textContent = `${status.message_count} messages`
   schemaChip.textContent = `${status.message_count} schema messages`
-  protoSchemaStatus.textContent = `Loaded ${status.file_count} files, ${status.message_count} messages, ${status.service_count} services from ${status.source_path}`
+  const mappingSummary = status.company_mapping_count > 0
+    ? ` ${status.company_mapping_count} company type/version mappings found.`
+    : ' No company ordinal mappings found.'
+  protoSchemaStatus.textContent = `Loaded ${status.file_count} files, ${status.message_count} messages, ${status.service_count} services from ${status.source_path}.${mappingSummary}`
   protoMessageSamples.innerHTML = status.sample_messages
     .map((messageName) => `<li>${escapeHtml(messageName)}</li>`)
     .join('')
+  if (status.company_mapping_examples.length > 0) {
+    protoMessageSamples.insertAdjacentHTML(
+      'afterbegin',
+      `<li class="schema-mapping-note">${escapeHtml(status.company_mapping_examples[0])}</li>`,
+    )
+  }
   renderProtoMessageOptions(status.message_names)
 }
 
@@ -1678,7 +1690,14 @@ function schemaBundleMatchesPreview(bundle: ProtoSchemaStatus, preview: WebSocke
     return false
   }
 
-  return bundle.host_match_type !== 'any' || Boolean(bundle.path_prefix)
+  return true
+}
+
+function decodeLabel(payloadDecode: PayloadDecode) {
+  const message = payloadDecode.schema_message
+    ? `<strong class="decode-message">${escapeHtml(shortMessageName(payloadDecode.schema_message))}</strong><br>`
+    : ''
+  return `${message}<span>${escapeHtml(payloadDecode.status)}</span>`
 }
 
 function hostWithoutPort(authority: string | null) {

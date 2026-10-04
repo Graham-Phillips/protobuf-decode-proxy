@@ -268,6 +268,8 @@ struct ProtoSchemaStatus {
     file_count: usize,
     message_count: usize,
     service_count: usize,
+    company_mapping_count: usize,
+    company_mapping_examples: Vec<String>,
     sample_messages: Vec<String>,
     message_names: Vec<String>,
 }
@@ -920,7 +922,7 @@ fn load_proto_descriptor_bundle(
     }
 
     let id = format!("schema-{}", schemas.len() + 1);
-    let status = proto_schema_status_from_pool(
+    let mut status = proto_schema_status_from_pool(
         id.clone(),
         name.clone(),
         &path,
@@ -929,6 +931,8 @@ fn load_proto_descriptor_bundle(
         path_prefix.clone(),
         &pool,
     );
+    status.company_mapping_count = company_message_mappings.len();
+    status.company_mapping_examples = company_message_mapping_examples(&company_message_mappings);
     schemas.push(ProtoSchemaBundle {
         host_match_type,
         host_match_value,
@@ -1302,11 +1306,8 @@ fn decode_websocket_payload_preview(
     schemas: &[ProtoSchemaBundle],
     mappings: &[WebSocketProtoMapping],
 ) -> PayloadDecode {
-    if matches!(payload_hint.likely_protocol.as_str(), "protobuf" | "grpc") {
-        if let Some(mapped_decode) = decode_websocket_payload_with_mapping(event, schemas, mappings)
-        {
-            return mapped_decode;
-        }
+    if let Some(mapped_decode) = decode_websocket_payload_with_mapping(event, schemas, mappings) {
+        return mapped_decode;
     }
 
     match event.direction {
@@ -1459,6 +1460,7 @@ fn decode_company_packet_payload(
     let mut decoded_count = 0usize;
     let mut unknown_count = 0usize;
     let mut details = Vec::new();
+    let mut decoded_message_names = Vec::new();
 
     for (index, item_value) in items.iter().enumerate() {
         let Value::Message(item) = item_value else {
@@ -1532,6 +1534,7 @@ fn decode_company_packet_payload(
                     ),
                     nested_fields: dynamic_message_fields(&message),
                 });
+                decoded_message_names.push(descriptor.full_name().to_owned());
                 decoded_count += 1;
             }
             Err(error) => {
@@ -1567,7 +1570,11 @@ fn decode_company_packet_payload(
     Some(PayloadDecode {
         direction: Some(direction_name(&event.direction).to_owned()),
         status,
-        schema_message: Some(envelope_descriptor.full_name().to_owned()),
+        schema_message: if decoded_message_names.len() == 1 {
+            decoded_message_names.into_iter().next()
+        } else {
+            Some(envelope_descriptor.full_name().to_owned())
+        },
         json_previews: Vec::new(),
         fields,
     })
@@ -2029,20 +2036,6 @@ fn decode_payload_preview(
     event: &ProxyEvent,
     schemas: &[ProtoSchemaBundle],
 ) -> PayloadDecode {
-    if !matches!(payload_hint.likely_protocol.as_str(), "protobuf" | "grpc") {
-        if payload_hint.likely_protocol == "json" {
-            return decode_json_preview(request_capture, response_capture);
-        }
-
-        return PayloadDecode {
-            direction: None,
-            status: payload_hint.decode_status.clone(),
-            schema_message: None,
-            json_previews: Vec::new(),
-            fields: Vec::new(),
-        };
-    }
-
     let (direction, capture) = response_capture
         .map(|capture| ("response".to_owned(), capture))
         .or_else(|| request_capture.map(|capture| ("request".to_owned(), capture)))
@@ -2051,9 +2044,17 @@ fn decode_payload_preview(
         });
 
     let Some(capture) = capture else {
+        if payload_hint.likely_protocol == "json" {
+            return decode_json_preview(request_capture, response_capture);
+        }
+
         return PayloadDecode {
             direction,
-            status: "Protobuf likely, but body sample was not captured because it was too large or streamed with unknown length.".to_owned(),
+            status: if matches!(payload_hint.likely_protocol.as_str(), "protobuf" | "grpc") {
+                "Protobuf likely, but body sample was not captured because it was too large or streamed with unknown length.".to_owned()
+            } else {
+                payload_hint.decode_status.clone()
+            },
             schema_message: None,
             json_previews: Vec::new(),
             fields: Vec::new(),
@@ -2063,11 +2064,19 @@ fn decode_payload_preview(
     if capture.bytes.is_empty() {
         return PayloadDecode {
             direction,
-            status: "Protobuf likely, but captured body was empty.".to_owned(),
+            status: if matches!(payload_hint.likely_protocol.as_str(), "protobuf" | "grpc") {
+                "Protobuf likely, but captured body was empty.".to_owned()
+            } else {
+                payload_hint.decode_status.clone()
+            },
             schema_message: None,
             json_previews: Vec::new(),
             fields: Vec::new(),
         };
+    }
+
+    if payload_hint.likely_protocol == "json" {
+        return decode_json_preview(request_capture, response_capture);
     }
 
     let decode_input = if payload_hint.likely_protocol == "grpc" {
@@ -2087,14 +2096,28 @@ fn decode_payload_preview(
         capture.bytes.as_slice()
     };
 
-    if let Some(company_decode) = decode_company_packet_payload(
-        decode_input,
-        event,
-        schemas,
-        capture.truncated,
-        capture.capture_limit,
-    ) {
-        return company_decode;
+    if matches!(payload_hint.likely_protocol.as_str(), "protobuf" | "grpc")
+        || (!looks_like_text(decode_input) && !schemas.is_empty())
+    {
+        if let Some(company_decode) = decode_company_packet_payload(
+            decode_input,
+            event,
+            schemas,
+            capture.truncated,
+            capture.capture_limit,
+        ) {
+            return company_decode;
+        }
+    }
+
+    if !matches!(payload_hint.likely_protocol.as_str(), "protobuf" | "grpc") {
+        return PayloadDecode {
+            direction,
+            status: payload_hint.decode_status.clone(),
+            schema_message: None,
+            json_previews: Vec::new(),
+            fields: Vec::new(),
+        };
     }
 
     match protobuf_wire_preview(decode_input, 32) {
@@ -2646,7 +2669,7 @@ fn schema_matches_event(schema: &ProtoSchemaBundle, event: &ProxyEvent) -> bool 
         }
     }
 
-    !matches!(schema.host_match_type, HostMatchType::Any) || schema.path_prefix.is_some()
+    true
 }
 
 fn websocket_mapping_matches_event(mapping: &WebSocketProtoMapping, event: &ProxyEvent) -> bool {
@@ -2761,9 +2784,23 @@ fn proto_schema_status_from_pool(
         file_count: pool.files().count(),
         message_count: message_names.len(),
         service_count: pool.services().count(),
+        company_mapping_count: 0,
+        company_mapping_examples: Vec::new(),
         sample_messages,
         message_names,
     }
+}
+
+fn company_message_mapping_examples(mappings: &BTreeMap<(i32, u32), Vec<String>>) -> Vec<String> {
+    mappings
+        .iter()
+        .flat_map(|((message_type, version), names)| {
+            names
+                .iter()
+                .map(|name| format!("type {message_type}, version {version}: {name}"))
+        })
+        .take(8)
+        .collect()
 }
 
 fn detect_http_anomalies(

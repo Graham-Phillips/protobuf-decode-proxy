@@ -20,6 +20,24 @@ set.
 The desired default workflow is: see messages, filter them, recognize their
 types in the table, then select one to inspect decoded field names and contents.
 
+## Current decoding evidence
+
+- `C:\Work2\GP\protos` and `C:\Work2\GP\mobile-server-api\mobile-server-api\src\protos`
+  contain the company `.proto` sources, including `generator/descriptor.proto`,
+  `iPhonePacketProto`, and versioned payload messages such as
+  `GetDataResponseV2Proto` and `GetDataResponseV3Proto`.
+- The existing `mockdata\protbuf.pb` is a usable `FileDescriptorSet` containing
+  the company envelope and ordinal metadata. The server/client mapping confirms
+  that one ordinal can select several payload versions; ordinal `43` is the
+  concrete example.
+- The URL Generator decodes the outer `iPhonePacketProto`, then selects the
+  inner message by `(messageType, messagePayloadVersion)`. The Rust path now
+  follows that behavior for HTTP and WebSocket payloads, including binary frames
+  whose transport hint is initially unknown.
+- The build/test machine still needs to compile the executable and capture a
+  real sample. This workstation is intentionally not used for Cargo dependency
+  downloads or Rust compilation.
+
 ## 1. Reproduce and trace the decoding failure
 
 - [ ] Capture a representative protobuf WebSocket message and its raw bytes.
@@ -28,7 +46,7 @@ types in the table, then select one to inspect decoded field names and contents.
 - [ ] Follow that message through capture, framing/envelope extraction, schema
   selection, message-type mapping, decoding, and UI rendering. Identify exactly
   where it falls back to the wire preview.
-- [ ] Verify the existing descriptor and mapping paths before adding another
+- [x] Verify the existing descriptor and mapping paths before adding another
   decoding mechanism. Check company envelope ordinals/versions and WebSocket
   rules where applicable; do not assume all traffic uses those formats.
 - [ ] Turn the captured sample into a regression fixture once its expected
@@ -52,7 +70,7 @@ message decoding (nested rows are flattened in this copied example):
 
 ## 2. Obtain enough schema information to decode real messages
 
-- [ ] Inventory available `.proto` files, descriptor bundles, generated protobuf
+- [x] Inventory available `.proto` files, descriptor bundles, generated protobuf
   code, and envelope/type metadata in this repo and already identified local
   sources. Record what is actually available and what is missing.
 - [ ] Where `.proto` sources exist, generate a descriptor set with dependencies
@@ -71,7 +89,7 @@ message decoding (nested rows are flattened in this copied example):
 
 ## 3. Make message identity and contents useful
 
-- [ ] Show the decoded message type in the Traffic table so users can recognize
+- [x] Show the decoded message type in the Traffic table so users can recognize
   messages without opening every row. Use an explicit unknown/undecoded state
   when identity cannot be established.
 - [ ] On selection, show named fields and values with nested/repeated structures
@@ -99,6 +117,9 @@ message decoding (nested rows are flattened in this copied example):
   table on the default page.
 - [ ] Keep schema setup and advanced diagnostics accessible without expanding
   them into the main message browsing workflow.
+
+- [x] Runtime Browser Setup now labels the generated launch snippets as
+  Windows PowerShell commands, including the copyable Edge and Chrome rows.
 
 ## 5. Verify the result
 

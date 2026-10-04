@@ -435,6 +435,12 @@ h3 {
   margin-top: 10px;
 }
 
+.command-language {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .command-row {
   display: grid;
   grid-template-columns: 1fr;

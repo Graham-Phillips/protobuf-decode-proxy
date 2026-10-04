@@ -2802,7 +2802,7 @@ fn application_message_mapping_examples(
         .flat_map(|((message_type, version), names)| {
             names
                 .iter()
-                .map(|name| format!("type {message_type}, version {version}: {name}"))
+                .map(move |name| format!("type {message_type}, version {version}: {name}"))
         })
         .take(8)
         .collect()

@@ -961,6 +961,27 @@ h3 {
   box-shadow: none;
 }
 
+.diagnostics-panel {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.diagnostics-panel > summary {
+  padding: 12px 14px;
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.diagnostics-panel > .events-panel {
+  margin-top: 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+
 .detail-content {
   margin-top: 12px;
   color: var(--muted);

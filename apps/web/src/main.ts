@@ -159,6 +159,9 @@ type SortKey = 'started_at' | 'name' | 'method' | 'host' | 'status' | 'type' | '
 type SortDirection = 'asc' | 'desc'
 type ResourceFilter = 'all' | 'fetch' | 'document' | 'js' | 'css' | 'image' | 'font' | 'media' | 'ws' | 'protobuf' | 'json' | 'other'
 type HttpResourceKind = Exclude<ResourceFilter, 'all' | 'ws'>
+type TrafficRow =
+  | { kind: 'http'; exchange: HttpExchange }
+  | { kind: 'websocket'; preview: WebSocketMessagePreview }
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 
@@ -203,18 +206,18 @@ app.innerHTML = `
           <div class="field">
             <span>Resource</span>
             <div class="resource-filter" role="group" aria-label="Resource filter">
-              <button class="resource-filter-button active" type="button" data-resource-filter="all">All</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="fetch">Fetch/XHR</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="document">Doc</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="js">JS</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="css">CSS</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="image">Img</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="font">Font</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="media">Media</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="ws">WS</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="protobuf">Proto</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="json">JSON</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="other">Other</button>
+              <button class="resource-filter-button active" type="button" data-resource-filter="all" aria-pressed="true">All</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="fetch" aria-pressed="false">Fetch/XHR</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="document" aria-pressed="false">Doc</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="js" aria-pressed="false">JS</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="css" aria-pressed="false">CSS</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="image" aria-pressed="false">Img</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="font" aria-pressed="false">Font</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="media" aria-pressed="false">Media</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="ws" aria-pressed="false">WS</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="protobuf" aria-pressed="false">Proto</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="json" aria-pressed="false">JSON</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="other" aria-pressed="false">Other</button>
             </div>
           </div>
           <label class="field">
@@ -260,7 +263,7 @@ app.innerHTML = `
                   <th><button class="sort-header" type="button" data-sort-key="name">Name</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="status">Status</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="type">Type</button></th>
-                  <th><button class="sort-header" type="button" data-sort-key="initiator">Initiator</button></th>
+                  <th><button class="sort-header" type="button" data-sort-key="initiator">Direction</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="size">Size</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="time">Time</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="method">Method</button></th>
@@ -269,8 +272,8 @@ app.innerHTML = `
                   <th><button class="sort-header" type="button" data-sort-key="findings">Findings</button></th>
                 </tr>
               </thead>
-              <tbody id="http-exchanges">
-                <tr><td colspan="10">No HTTP exchanges captured.</td></tr>
+              <tbody id="traffic-messages">
+                <tr><td colspan="10">No traffic messages captured.</td></tr>
               </tbody>
             </table>
           </div>
@@ -303,46 +306,16 @@ app.innerHTML = `
           </div>
         </section>
 
-        <section class="events-panel">
-          <div class="panel-heading">
-            <h2>Event Timeline</h2>
-            <span class="small-value">Newest first</span>
-          </div>
-          <ol id="events" class="events"></ol>
-        </section>
-
-        <section class="events-panel">
-          <div class="panel-heading">
-            <h2>WebSocket Messages</h2>
-            <span id="websocket-preview-summary" class="small-value">No frames</span>
-          </div>
-          <div class="compact-table-wrap">
-            <table class="compact-table">
-              <thead>
-                <tr>
-                  <th>Direction</th>
-                  <th>Kind</th>
-                  <th>Target</th>
-                  <th>Type</th>
-                  <th>Size</th>
-                  <th>Decode</th>
-                </tr>
-              </thead>
-              <tbody id="websocket-message-previews">
-                <tr><td colspan="6">No WebSocket messages captured.</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <section class="frame-detail" aria-label="Selected WebSocket frame">
+        <details class="diagnostics-panel">
+          <summary>Capture diagnostics</summary>
+          <section class="events-panel">
             <div class="panel-heading">
-              <h3>Frame Detail</h3>
-              <span id="selected-websocket-kind" class="small-value">No selection</span>
+              <h2>Event Timeline</h2>
+              <span class="small-value">Newest first</span>
             </div>
-            <div id="websocket-frame-detail" class="detail-content">
-              Select a WebSocket message to inspect target, direction, payload preview, and decode status.
-            </div>
+            <ol id="events" class="events"></ol>
           </section>
-        </section>
+        </details>
       </section>
     </section>
 
@@ -552,12 +525,8 @@ const websocketActive = document.querySelector<HTMLElement>('#websocket-active')
 const websocketOpened = document.querySelector<HTMLElement>('#websocket-opened')!
 const websocketErrors = document.querySelector<HTMLElement>('#websocket-errors')!
 const websocketState = document.querySelector<HTMLElement>('#websocket-state')!
-const websocketPreviewSummary = document.querySelector<HTMLElement>('#websocket-preview-summary')!
-const websocketMessagePreviews = document.querySelector<HTMLTableSectionElement>('#websocket-message-previews')!
-const selectedWebSocketKind = document.querySelector<HTMLElement>('#selected-websocket-kind')!
-const websocketFrameDetail = document.querySelector<HTMLElement>('#websocket-frame-detail')!
 const exchangeTableWrap = document.querySelector<HTMLElement>('#exchange-table-wrap')!
-const httpExchanges = document.querySelector<HTMLTableSectionElement>('#http-exchanges')!
+const trafficMessages = document.querySelector<HTMLTableSectionElement>('#traffic-messages')!
 const exchangeTimeline = document.querySelector<HTMLElement>('#exchange-timeline')!
 const timelineSummary = document.querySelector<HTMLElement>('#timeline-summary')!
 const eventsList = document.querySelector<HTMLOListElement>('#events')!
@@ -624,6 +593,7 @@ let latestSchemaBundles: ProtoSchemaStatus[] = []
 let latestWebSocketMappings: WebSocketProtoMapping[] = []
 let selectedExchangeId: string | null = null
 let selectedWebSocketPreviewId: string | null = null
+let selectedTrafficKey: string | null = null
 let selectedWebSocketDecode: PayloadDecode | null = null
 let selectedWebSocketDecodeMessage = ''
 let editingWebSocketMappingId: string | null = null
@@ -633,7 +603,7 @@ let autoScrollExchanges = true
 let programmaticExchangeScroll = false
 let sortKey: SortKey = 'started_at'
 let sortDirection: SortDirection = 'asc'
-let activeResourceFilter: ResourceFilter = 'all'
+let activeResourceFilters = new Set<ResourceFilter>()
 
 async function refresh() {
   if (refreshInFlight) {
@@ -703,6 +673,7 @@ async function refreshProxy() {
 
 function renderEvents(summary: ProxyEventSummary) {
   latestExchanges = summary.http_exchanges
+  latestWebSocketPreviews = summary.websocket_message_previews
   const shouldAutoScroll = autoScrollExchanges || isScrolledToBottom(exchangeTableWrap)
   eventTotal.textContent = String(summary.total)
   httpRequests.textContent = String(summary.http_requests)
@@ -715,9 +686,8 @@ function renderEvents(summary: ProxyEventSummary) {
   websocketState.lastElementChild!.textContent = summary.websocket_active_connections > 0
     ? `${summary.websocket_active_connections} WebSocket${summary.websocket_active_connections === 1 ? '' : 's'}`
     : 'No WebSockets'
-  renderHttpExchanges()
-  renderWebSocketMessagePreviews(summary.websocket_message_previews)
-  renderSelectedExchange()
+  renderTrafficMessages()
+  renderSelectedTraffic()
   renderTimeline()
   renderHeatmap()
   scrollExchangeTableIfNeeded(shouldAutoScroll)
@@ -745,59 +715,20 @@ function renderEvents(summary: ProxyEventSummary) {
     .join('')
 }
 
-function renderWebSocketMessagePreviews(previews: WebSocketMessagePreview[]) {
-  latestWebSocketPreviews = previews
-  const visiblePreviews = filteredWebSocketPreviews(previews)
-  const recentPreviews = visiblePreviews.slice(-80).reverse()
-  const protobufCount = visiblePreviews.filter((preview) => preview.payload_hint.likely_protocol === 'protobuf').length
-  const filterNote = activeResourceFilter === 'all' ? '' : `, ${resourceFilterLabel(activeResourceFilter)} filter active`
-  websocketPreviewSummary.textContent = `${visiblePreviews.length} visible of ${previews.length} frame${previews.length === 1 ? '' : 's'}, ${protobufCount} protobuf candidate${protobufCount === 1 ? '' : 's'}${filterNote}. Newest frames appear first.`
-
-  if (recentPreviews.length === 0) {
-    selectedWebSocketPreviewId = null
-    selectedWebSocketDecode = null
-    websocketMessagePreviews.innerHTML = '<tr><td colspan="6">No matching WebSocket messages.</td></tr>'
-    renderSelectedWebSocketPreview()
-    return
-  }
-
-  if (!selectedWebSocketPreviewId || !visiblePreviews.some((preview) => preview.id === selectedWebSocketPreviewId)) {
-    selectedWebSocketPreviewId = recentPreviews[0]?.id ?? null
-  }
-
-  websocketMessagePreviews.innerHTML = recentPreviews
-    .map((preview) => `
-      <tr
-        class="${preview.id === selectedWebSocketPreviewId ? 'selected' : ''}"
-        data-websocket-preview-id="${escapeHtml(preview.id)}"
-        title="${escapeHtml(preview.connection_id)}"
-      >
-        <td>${escapeHtml(directionLabel(preview.direction))}</td>
-        <td>${escapeHtml(preview.message_kind ?? '-')}</td>
-        <td>${serverBadge(preview.authority)}</td>
-        <td>${payloadLabel(preview.payload_hint)}</td>
-        <td>${byteLabel(preview.body_len)}</td>
-        <td>${decodeLabel(preview.payload_decode)}</td>
-      </tr>
-    `)
-    .join('')
-  renderSelectedWebSocketPreview()
-}
-
 function renderSelectedWebSocketPreview() {
   const preview = latestWebSocketPreviews.find((item) => item.id === selectedWebSocketPreviewId)
 
   if (!preview) {
-    selectedWebSocketKind.textContent = 'No selection'
+    selectedExchangeKind.textContent = 'No selection'
     selectedWebSocketDecode = null
-    websocketFrameDetail.textContent = 'Select a WebSocket message to inspect target, direction, payload preview, and decode status.'
+    exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and findings.'
     return
   }
 
-  selectedWebSocketKind.textContent = preview.payload_hint.likely_protocol
+  selectedExchangeKind.textContent = preview.payload_hint.likely_protocol
   const activeDecode = selectedWebSocketDecode ?? preview.payload_decode
   renderProtoMessageOptions(messageNamesForPreview(preview))
-  websocketFrameDetail.innerHTML = `
+  exchangeDetail.innerHTML = `
     <div class="schema-decode-controls">
       <label class="field">
         <span>Decode selected frame as</span>
@@ -847,47 +778,73 @@ function renderSelectedWebSocketPreview() {
   bindWebSocketDecodeControls(preview)
 }
 
-function renderHttpExchanges() {
-  const visibleExchanges = filteredExchanges()
-  const sortedExchanges = sortExchanges(visibleExchanges)
-  const visibleWindow = exchangeWindow(sortedExchanges)
+function renderTrafficMessages() {
+  const visibleRows = filteredTrafficRows()
+  const sortedRows = sortTrafficRows(visibleRows)
+  const visibleWindow = sortedRows
   const scrollTopBeforeRender = exchangeTableWrap.scrollTop
   const shouldPreserveScroll = !autoScrollExchanges
 
   updateSortHeaders()
-  const resourceNote = activeResourceFilter === 'all' ? 'all resources' : resourceFilterLabel(activeResourceFilter)
-  trafficSummary.textContent = `${visibleExchanges.length} visible of ${latestExchanges.length} HTTP exchanges, ${resourceNote}. ${sortDescription()}; auto-scroll pauses when you scroll up.`
-  analyseSelectionButton.disabled = visibleExchanges.length === 0
+  trafficSummary.textContent = `${visibleRows.length} visible of ${trafficRows().length} traffic messages, ${resourceFilterSummary()}. ${sortDescription()}; auto-scroll pauses when you scroll up.`
+  analyseSelectionButton.disabled = visibleRows.length === 0
 
   if (visibleWindow.length === 0) {
+    selectedTrafficKey = null
     selectedExchangeId = null
-    httpExchanges.innerHTML = '<tr><td colspan="10">No matching HTTP exchanges.</td></tr>'
+    selectedWebSocketPreviewId = null
+    selectedWebSocketDecode = null
+    trafficMessages.innerHTML = '<tr><td colspan="10">No matching traffic messages.</td></tr>'
     return
   }
 
-  if (!selectedExchangeId || !sortedExchanges.some((exchange) => exchange.id === selectedExchangeId)) {
-    selectedExchangeId = visibleWindow.at(-1)?.id ?? null
+  if (!selectedTrafficKey || !sortedRows.some((row) => trafficRowKey(row) === selectedTrafficKey)) {
+    const newest = visibleRows.reduce((latest, row) => trafficRowTimestamp(row) > trafficRowTimestamp(latest) ? row : latest)
+    selectedTrafficKey = trafficRowKey(newest)
   }
 
-  httpExchanges.innerHTML = visibleWindow
-    .map((exchange) => `
-      <tr class="${exchange.id === selectedExchangeId ? 'selected' : ''}" data-exchange-id="${escapeHtml(exchange.id)}">
-        <td>${escapeHtml(exchangeName(exchange))}</td>
-        <td>${statusLabel(exchange.status)}</td>
-        <td>${payloadLabel(exchange.payload_hint)}</td>
-        <td>${escapeHtml(exchangeInitiator(exchange))}</td>
-        <td>${byteLabel(exchange.response_body_len)}</td>
-        <td>${durationLabel(exchange.duration_ms)}</td>
-        <td>${escapeHtml(exchange.method ?? '-')}</td>
-        <td>${serverBadge(exchange.authority)}</td>
-        <td>${decodeLabel(exchange.payload_decode)}</td>
-        <td>${anomalyLabels(exchange.anomalies)}</td>
+  trafficMessages.innerHTML = visibleWindow
+    .map((row) => `
+      <tr class="${trafficRowKey(row) === selectedTrafficKey ? 'selected' : ''}" data-traffic-key="${escapeHtml(trafficRowKey(row))}" title="${escapeHtml(trafficRowHost(row))}">
+        <td>${escapeHtml(trafficRowName(row))}</td>
+        <td>${trafficRowStatus(row)}</td>
+        <td>${payloadLabel(trafficRowPayloadHint(row))}</td>
+        <td>${escapeHtml(trafficRowDirection(row))}</td>
+        <td>${byteLabel(trafficRowSize(row))}</td>
+        <td>${escapeHtml(trafficRowDuration(row))}</td>
+        <td>${escapeHtml(trafficRowMethod(row))}</td>
+        <td>${serverBadge(trafficRowHost(row))}</td>
+        <td>${decodeLabel(trafficRowDecode(row))}</td>
+        <td>${trafficRowAnomalies(row).length > 0 ? anomalyLabels(trafficRowAnomalies(row)) : '<span class="muted">None</span>'}</td>
       </tr>
     `)
     .join('')
 
   if (shouldPreserveScroll) {
     exchangeTableWrap.scrollTop = scrollTopBeforeRender
+  }
+}
+
+function renderSelectedTraffic() {
+  const row = trafficRows().find((candidate) => trafficRowKey(candidate) === selectedTrafficKey)
+
+  if (!row) {
+    selectedExchangeId = null
+    selectedWebSocketPreviewId = null
+    selectedWebSocketDecode = null
+    selectedExchangeKind.textContent = 'No selection'
+    exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and findings.'
+    return
+  }
+
+  if (row.kind === 'http') {
+    selectedExchangeId = row.exchange.id
+    selectedWebSocketPreviewId = null
+    renderSelectedExchange()
+  } else {
+    selectedExchangeId = null
+    selectedWebSocketPreviewId = row.preview.id
+    renderSelectedWebSocketPreview()
   }
 }
 
@@ -1114,21 +1071,90 @@ function bindWebSocketDecodeControls(preview: WebSocketMessagePreview) {
   })
 }
 
-function filteredExchanges() {
+function trafficRows(): TrafficRow[] {
+  return [
+    ...latestExchanges.map((exchange) => ({ kind: 'http' as const, exchange })),
+    ...latestWebSocketPreviews.map((preview) => ({ kind: 'websocket' as const, preview })),
+  ]
+}
+
+function trafficRowKey(row: TrafficRow) {
+  return `${row.kind}:${row.kind === 'http' ? row.exchange.id : row.preview.id}`
+}
+
+function trafficRowTimestamp(row: TrafficRow) {
+  return row.kind === 'http' ? row.exchange.started_at_unix_ms : row.preview.timestamp_unix_ms
+}
+
+function trafficRowName(row: TrafficRow) {
+  if (row.kind === 'http') {
+    return exchangeName(row.exchange)
+  }
+
+  return row.preview.message_kind ?? 'WebSocket frame'
+}
+
+function trafficRowDirection(row: TrafficRow) {
+  if (row.kind === 'http') {
+    return row.exchange.status === null ? 'Request' : 'Request -> Response'
+  }
+
+  return directionLabel(row.preview.direction)
+}
+
+function trafficRowSize(row: TrafficRow) {
+  return row.kind === 'http' ? row.exchange.response_body_len : row.preview.body_len
+}
+
+function trafficRowDuration(row: TrafficRow) {
+  return row.kind === 'http' ? durationLabel(row.exchange.duration_ms) : '-'
+}
+
+function trafficRowMethod(row: TrafficRow) {
+  if (row.kind === 'http') {
+    return row.exchange.method ?? '-'
+  }
+
+  return row.preview.message_kind ?? 'Frame'
+}
+
+function trafficRowHost(row: TrafficRow) {
+  return row.kind === 'http' ? row.exchange.authority ?? '-' : row.preview.authority ?? '-'
+}
+
+function trafficRowStatus(row: TrafficRow) {
+  return row.kind === 'http' ? statusLabel(row.exchange.status) : '<span class="muted">Frame</span>'
+}
+
+function trafficRowPayloadHint(row: TrafficRow) {
+  return row.kind === 'http' ? row.exchange.payload_hint : row.preview.payload_hint
+}
+
+function trafficRowDecode(row: TrafficRow) {
+  return row.kind === 'http' ? row.exchange.payload_decode : row.preview.payload_decode
+}
+
+function trafficRowAnomalies(row: TrafficRow) {
+  return row.kind === 'http' ? row.exchange.anomalies : []
+}
+
+function filteredTrafficRows() {
   const search = searchInput.value.trim().toLowerCase()
   const protocol = protocolFilter.value
   const anomaliesOnly = anomalyFilter.checked
 
-  return latestExchanges.filter((exchange) => {
-    if (!resourceFilterMatchesExchange(exchange)) {
+  return trafficRows().filter((row) => {
+    if (!resourceFilterMatchesTrafficRow(row)) {
       return false
     }
 
-    if (protocol !== 'all' && exchange.payload_hint.likely_protocol !== protocol) {
+    const payloadHint = trafficRowPayloadHint(row)
+    const anomalies = trafficRowAnomalies(row)
+    if (protocol !== 'all' && payloadHint.likely_protocol !== protocol) {
       return false
     }
 
-    if (anomaliesOnly && exchange.anomalies.length === 0) {
+    if (anomaliesOnly && anomalies.length === 0) {
       return false
     }
 
@@ -1137,16 +1163,18 @@ function filteredExchanges() {
     }
 
     const haystack = [
-      exchange.method,
-      exchange.scheme,
-      exchange.authority,
-      exchange.path,
-      exchange.status === null ? null : String(exchange.status),
-      exchange.payload_hint.likely_protocol,
-      exchange.payload_hint.decode_status,
-      exchange.payload_hint.request_content_type,
-      exchange.payload_hint.response_content_type,
-      ...exchange.anomalies.map((anomaly) => anomaly.kind),
+      trafficRowName(row),
+      trafficRowDirection(row),
+      trafficRowMethod(row),
+      trafficRowHost(row),
+      row.kind === 'http' ? row.exchange.scheme : row.preview.scheme,
+      row.kind === 'http' ? row.exchange.path : row.preview.path,
+      row.kind === 'http' && row.exchange.status !== null ? String(row.exchange.status) : null,
+      payloadHint.likely_protocol,
+      payloadHint.decode_status,
+      payloadHint.request_content_type,
+      payloadHint.response_content_type,
+      ...anomalies.map((anomaly) => anomaly.kind),
     ]
       .filter(Boolean)
       .join(' ')
@@ -1156,41 +1184,58 @@ function filteredExchanges() {
   })
 }
 
-function filteredWebSocketPreviews(previews: WebSocketMessagePreview[]) {
-  if (activeResourceFilter === 'all' || activeResourceFilter === 'ws') {
-    return previews
-  }
-
-  if (activeResourceFilter === 'protobuf' || activeResourceFilter === 'json') {
-    return previews.filter((preview) => preview.payload_hint.likely_protocol === activeResourceFilter)
-  }
-
-  return []
+function filteredExchanges() {
+  return filteredTrafficRows()
+    .filter((row): row is { kind: 'http'; exchange: HttpExchange } => row.kind === 'http')
+    .map((row) => row.exchange)
 }
 
 function resourceFilterMatchesExchange(exchange: HttpExchange) {
-  if (activeResourceFilter === 'all') {
+  if (activeResourceFilters.size === 0) {
     return true
   }
 
-  if (activeResourceFilter === 'ws') {
+  const resourceKind = resourceKindForExchange(exchange)
+  return [...activeResourceFilters].some((filter) => resourceFilterMatchesHttpKind(filter, resourceKind))
+}
+
+function resourceFilterMatchesTrafficRow(row: TrafficRow) {
+  if (activeResourceFilters.size === 0) {
+    return true
+  }
+
+  if (row.kind === 'http') {
+    return resourceFilterMatchesExchange(row.exchange)
+  }
+
+  return [...activeResourceFilters].some((filter) => {
+    if (filter === 'ws') {
+      return true
+    }
+    if (filter === 'protobuf') {
+      return ['protobuf', 'grpc'].includes(row.preview.payload_hint.likely_protocol)
+    }
+    if (filter === 'json') {
+      return row.preview.payload_hint.likely_protocol === 'json'
+    }
+    return false
+  })
+}
+
+function resourceFilterMatchesHttpKind(filter: ResourceFilter, resourceKind: HttpResourceKind) {
+  if (filter === 'ws') {
     return false
   }
-
-  if (activeResourceFilter === 'protobuf') {
-    return exchange.payload_hint.likely_protocol === 'protobuf' || exchange.payload_hint.likely_protocol === 'grpc'
+  if (filter === 'protobuf') {
+    return resourceKind === 'protobuf'
   }
-
-  if (activeResourceFilter === 'json') {
-    return exchange.payload_hint.likely_protocol === 'json'
+  if (filter === 'json') {
+    return resourceKind === 'json'
   }
-
-  const resourceKind = resourceKindForExchange(exchange)
-  if (activeResourceFilter === 'fetch') {
+  if (filter === 'fetch') {
     return ['fetch', 'json', 'protobuf'].includes(resourceKind)
   }
-
-  return resourceKind === activeResourceFilter
+  return resourceKind === filter
 }
 
 function resourceKindForExchange(exchange: HttpExchange): HttpResourceKind {
@@ -1260,9 +1305,20 @@ function resourceFilterLabel(filter: ResourceFilter) {
   }
 }
 
+function resourceFilterSummary() {
+  if (activeResourceFilters.size === 0) {
+    return 'all resources'
+  }
+
+  return [...activeResourceFilters].map(resourceFilterLabel).join(', ')
+}
+
 function updateResourceFilterButtons() {
   resourceFilterButtons.forEach((button) => {
-    button.classList.toggle('active', button.dataset.resourceFilter === activeResourceFilter)
+    const filter = button.dataset.resourceFilter as ResourceFilter | undefined
+    const active = filter === 'all' ? activeResourceFilters.size === 0 : filter !== undefined && activeResourceFilters.has(filter)
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
   })
 }
 
@@ -1282,10 +1338,6 @@ function sortExchanges(exchanges: HttpExchange[]) {
     const result = compareSortValue(sortValue(left, sortKey), sortValue(right, sortKey))
     return sortDirection === 'asc' ? result : -result
   })
-}
-
-function exchangeWindow(exchanges: HttpExchange[]) {
-  return exchanges
 }
 
 function sortValue(exchange: HttpExchange, key: SortKey): string | number {
@@ -1691,6 +1743,44 @@ function schemaBundleMatchesPreview(bundle: ProtoSchemaStatus, preview: WebSocke
   }
 
   return true
+}
+
+function sortTrafficRows(rows: TrafficRow[]) {
+  return [...rows].sort((left, right) => {
+    const result = compareSortValue(trafficSortValue(left, sortKey), trafficSortValue(right, sortKey))
+    return sortDirection === 'asc' ? result : -result
+  })
+}
+
+function trafficSortValue(row: TrafficRow, key: SortKey): string | number {
+  if (row.kind === 'http') {
+    return sortValue(row.exchange, key)
+  }
+
+  switch (key) {
+    case 'started_at':
+      return row.preview.timestamp_unix_ms
+    case 'name':
+      return trafficRowName(row)
+    case 'method':
+      return trafficRowMethod(row)
+    case 'host':
+      return trafficRowHost(row)
+    case 'status':
+      return -1
+    case 'type':
+      return row.preview.payload_hint.likely_protocol
+    case 'initiator':
+      return trafficRowDirection(row)
+    case 'size':
+      return row.preview.body_len ?? -1
+    case 'time':
+      return -1
+    case 'decode':
+      return row.preview.payload_decode.status
+    case 'findings':
+      return 0
+  }
 }
 
 function decodeLabel(payloadDecode: PayloadDecode) {
@@ -2144,32 +2234,22 @@ websocketMappings.addEventListener('click', async (event) => {
   }
 })
 
-httpExchanges.addEventListener('click', (event) => {
-  const row = (event.target as HTMLElement).closest<HTMLTableRowElement>('tr[data-exchange-id]')
+trafficMessages.addEventListener('click', (event) => {
+  const row = (event.target as HTMLElement).closest<HTMLTableRowElement>('tr[data-traffic-key]')
   if (!row) {
     return
   }
 
-  selectedExchangeId = row.dataset.exchangeId ?? null
-  renderHttpExchanges()
-  renderSelectedExchange()
-})
-
-websocketMessagePreviews.addEventListener('click', (event) => {
-  const row = (event.target as HTMLElement).closest<HTMLTableRowElement>('tr[data-websocket-preview-id]')
-  if (!row) {
-    return
-  }
-
-  selectedWebSocketPreviewId = row.dataset.websocketPreviewId ?? null
+  selectedTrafficKey = row.dataset.trafficKey ?? null
   selectedWebSocketDecode = null
-  renderWebSocketMessagePreviews(latestWebSocketPreviews)
+  renderTrafficMessages()
+  renderSelectedTraffic()
 })
 
 searchInput.addEventListener('input', () => {
   autoScrollExchanges = true
-  renderHttpExchanges()
-  renderSelectedExchange()
+  renderTrafficMessages()
+  renderSelectedTraffic()
   renderTimeline()
   renderHeatmap()
   scrollExchangeTableIfNeeded(true)
@@ -2177,8 +2257,8 @@ searchInput.addEventListener('input', () => {
 
 protocolFilter.addEventListener('change', () => {
   autoScrollExchanges = true
-  renderHttpExchanges()
-  renderSelectedExchange()
+  renderTrafficMessages()
+  renderSelectedTraffic()
   renderTimeline()
   renderHeatmap()
   scrollExchangeTableIfNeeded(true)
@@ -2191,12 +2271,17 @@ resourceFilterButtons.forEach((button) => {
       return
     }
 
-    activeResourceFilter = filter
+    if (filter === 'all') {
+      activeResourceFilters.clear()
+    } else if (activeResourceFilters.has(filter)) {
+      activeResourceFilters.delete(filter)
+    } else {
+      activeResourceFilters.add(filter)
+    }
     autoScrollExchanges = true
     updateResourceFilterButtons()
-    renderHttpExchanges()
-    renderWebSocketMessagePreviews(latestWebSocketPreviews)
-    renderSelectedExchange()
+    renderTrafficMessages()
+    renderSelectedTraffic()
     renderTimeline()
     renderHeatmap()
     scrollExchangeTableIfNeeded(true)
@@ -2205,8 +2290,8 @@ resourceFilterButtons.forEach((button) => {
 
 anomalyFilter.addEventListener('change', () => {
   autoScrollExchanges = true
-  renderHttpExchanges()
-  renderSelectedExchange()
+  renderTrafficMessages()
+  renderSelectedTraffic()
   renderTimeline()
   renderHeatmap()
   scrollExchangeTableIfNeeded(true)
@@ -2216,12 +2301,11 @@ clearFiltersButton.addEventListener('click', () => {
   searchInput.value = ''
   protocolFilter.value = 'all'
   anomalyFilter.checked = false
-  activeResourceFilter = 'all'
+  activeResourceFilters.clear()
   updateResourceFilterButtons()
   autoScrollExchanges = true
-  renderHttpExchanges()
-  renderWebSocketMessagePreviews(latestWebSocketPreviews)
-  renderSelectedExchange()
+  renderTrafficMessages()
+  renderSelectedTraffic()
   renderTimeline()
   renderHeatmap()
   scrollExchangeTableIfNeeded(true)
@@ -2233,10 +2317,10 @@ exchangeTimeline.addEventListener('click', (event) => {
     return
   }
 
-  selectedExchangeId = row.dataset.exchangeId ?? null
-  renderHttpExchanges()
+  selectedTrafficKey = `http:${row.dataset.exchangeId ?? ''}`
+  renderTrafficMessages()
   renderTimeline()
-  renderSelectedExchange()
+  renderSelectedTraffic()
 })
 
 clearCaptureButton.addEventListener('click', async () => {
@@ -2245,6 +2329,9 @@ clearCaptureButton.addEventListener('click', async () => {
   try {
     await invoke('clear_proxy_events')
     selectedExchangeId = null
+    selectedWebSocketPreviewId = null
+    selectedTrafficKey = null
+    selectedWebSocketDecode = null
     autoScrollExchanges = true
     await refresh()
   } finally {
@@ -2253,10 +2340,9 @@ clearCaptureButton.addEventListener('click', async () => {
 })
 
 analyseSelectionButton.addEventListener('click', () => {
-  const visible = filteredExchanges()
-  const anomalyCount = visible.filter((exchange) => exchange.anomalies.length > 0).length
-  const resourceNote = activeResourceFilter === 'all' ? 'all resources' : resourceFilterLabel(activeResourceFilter)
-  trafficSummary.textContent = `${visible.length} visible HTTP rows, ${anomalyCount} with findings, ${resourceNote}. ${sortDescription()}.`
+  const visible = filteredTrafficRows()
+  const anomalyCount = visible.filter((row) => trafficRowAnomalies(row).length > 0).length
+  trafficSummary.textContent = `${visible.length} visible traffic rows, ${anomalyCount} with findings, ${resourceFilterSummary()}. ${sortDescription()}.`
 })
 
 exchangeTableWrap.addEventListener('scroll', () => {
@@ -2300,8 +2386,8 @@ sortHeaderButtons.forEach((button) => {
     }
 
     autoScrollExchanges = sortKey === 'started_at' && sortDirection === 'asc'
-    renderHttpExchanges()
-    renderSelectedExchange()
+    renderTrafficMessages()
+    renderSelectedTraffic()
     renderTimeline()
     scrollExchangeTableIfNeeded(autoScrollExchanges)
   })

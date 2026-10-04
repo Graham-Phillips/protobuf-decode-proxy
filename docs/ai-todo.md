@@ -104,19 +104,24 @@ message decoding (nested rows are flattened in this copied example):
 
 ## 4. Simplify the first page
 
-- [ ] Make the default Traffic page one message table, filter controls, and one
+- [x] Make the default Traffic page one message table, filter controls, and one
   selected-message inspector. Remove duplicate payload previews from this flow.
-- [ ] Replace the single-choice Resource filter with independent selections.
+- [x] Replace the single-choice Resource filter with independent selections.
   Selecting Img + JSON + Proto must show the union of those categories, then
   apply the other filters. Define clear All/reset and no-selection behavior.
-- [ ] Preserve protobuf WebSocket messages in the main Traffic view. Put
+- [x] Preserve protobuf WebSocket messages in the main Traffic view. Put
   transport-specific WebSocket information, frame diagnostics, and connection
-  details in a separate tab if that reduces clutter.
-- [ ] Check whether Event Timeline respects filters and what additional question
+  details in the shared selected-message inspector.
+- [x] Check whether Event Timeline respects filters and what additional question
   it answers. Move it into an optional view; do not keep a duplicate unfiltered
-  table on the default page.
-- [ ] Keep schema setup and advanced diagnostics accessible without expanding
+  table on the default page. Capture diagnostics are collapsed by default.
+- [x] Keep schema setup and advanced diagnostics accessible without expanding
   them into the main message browsing workflow.
+
+Implementation note: the Traffic page now uses one combined HTTP/WebSocket
+message table and one selected-message inspector. Event Timeline remains an
+optional filtered view, while the capture event list is collapsed under
+Capture diagnostics.
 
 - [x] Runtime Browser Setup now labels the generated launch snippets as
   Windows PowerShell commands, including the copyable Edge and Chrome rows.

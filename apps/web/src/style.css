@@ -1029,6 +1029,21 @@ h3 {
   box-shadow: none;
 }
 
+.decoded-message-panel {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.decoded-message-content {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .traffic-detail-panel {
   padding: 0;
   overflow: hidden;

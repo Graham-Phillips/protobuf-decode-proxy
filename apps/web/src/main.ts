@@ -236,6 +236,10 @@ app.innerHTML = `
             <input id="anomaly-filter" type="checkbox">
             <span>Anomalies only</span>
           </label>
+          <label class="check-row">
+            <input id="streaming-price-filter" type="checkbox" checked>
+            <span>Show StreamingPriceV4</span>
+          </label>
           <button id="analyse-selection" class="primary-button" type="button">Analyse Visible</button>
         </section>
       </aside>
@@ -291,6 +295,16 @@ app.innerHTML = `
             </table>
           </div>
         </div>
+
+        <section class="decoded-message-panel" aria-label="Decoded message">
+          <div class="panel-heading">
+            <h2>Decoded Message</h2>
+            <span id="selected-decoded-kind" class="small-value">No selection</span>
+          </div>
+          <div id="decoded-message-content" class="decoded-message-content">
+            Select a traffic row to inspect its decoded protobuf JSON.
+          </div>
+        </section>
 
         <div id="timeline-view" class="data-view timeline-view">
           <div class="timeline-header">
@@ -590,6 +604,7 @@ const websocketMappings = document.querySelector<HTMLElement>('#websocket-mappin
 const searchInput = document.querySelector<HTMLInputElement>('#traffic-search')!
 const protocolFilter = document.querySelector<HTMLSelectElement>('#protocol-filter')!
 const anomalyFilter = document.querySelector<HTMLInputElement>('#anomaly-filter')!
+const streamingPriceFilter = document.querySelector<HTMLInputElement>('#streaming-price-filter')!
 const clearFiltersButton = document.querySelector<HTMLButtonElement>('#clear-filters')!
 const clearCaptureButton = document.querySelector<HTMLButtonElement>('#clear-capture')!
 const analyseSelectionButton = document.querySelector<HTMLButtonElement>('#analyse-selection')!
@@ -606,6 +621,8 @@ const workspaceViews = document.querySelectorAll<HTMLElement>('.workspace-view')
 const viewButtons = document.querySelectorAll<HTMLButtonElement>('.view-button')
 const sortHeaderButtons = document.querySelectorAll<HTMLButtonElement>('.sort-header')
 const selectedExchangeKind = document.querySelector<HTMLElement>('#selected-exchange-kind')!
+const selectedDecodedKind = document.querySelector<HTMLElement>('#selected-decoded-kind')!
+const decodedMessageContent = document.querySelector<HTMLElement>('#decoded-message-content')!
 const copySelectedTrafficButton = document.querySelector<HTMLButtonElement>('#copy-selected-traffic')!
 const selectedCopyStatus = document.querySelector<HTMLElement>('#selected-copy-status')!
 const trafficDetail = document.querySelector<HTMLDetailsElement>('#traffic-detail')!
@@ -643,6 +660,7 @@ type UiPreferences = {
   search?: string
   protocol?: string
   anomaliesOnly?: boolean
+  showStreamingPriceV4?: boolean
   resourceFilters?: ResourceFilter[]
   autoScroll?: boolean
 }
@@ -663,6 +681,7 @@ function saveUiPreferences() {
       search: searchInput.value,
       protocol: protocolFilter.value,
       anomaliesOnly: anomalyFilter.checked,
+      showStreamingPriceV4: streamingPriceFilter.checked,
       resourceFilters: [...activeResourceFilters],
       autoScroll: autoScrollEnabled,
     } satisfies UiPreferences))
@@ -684,6 +703,7 @@ protocolFilter.value = savedUiPreferences.protocol && [...protocolFilter.options
   ? savedUiPreferences.protocol
   : 'all'
 anomalyFilter.checked = savedUiPreferences.anomaliesOnly === true
+streamingPriceFilter.checked = savedUiPreferences.showStreamingPriceV4 !== false
 activeResourceFilters = new Set((savedUiPreferences.resourceFilters ?? []).filter((filter) => filter !== 'all'))
 autoScrollEnabled = savedUiPreferences.autoScroll !== false
 autoScrollToggle.checked = autoScrollEnabled
@@ -758,7 +778,7 @@ async function refreshProxy() {
 function renderEvents(summary: ProxyEventSummary) {
   latestExchanges = summary.http_exchanges
   latestWebSocketPreviews = summary.websocket_message_previews
-  const shouldAutoScroll = autoScrollEnabled && (autoScrollExchanges || isScrolledToBottom(exchangeTableWrap))
+  const shouldAutoScroll = autoScrollEnabled && autoScrollExchanges
   eventTotal.textContent = String(summary.total)
   httpRequests.textContent = String(summary.http_requests)
   httpResponses.textContent = String(summary.http_responses)
@@ -854,8 +874,8 @@ function renderSelectedWebSocketPreview() {
       <div><dt>Connection</dt><dd>${escapeHtml(preview.connection_id)}</dd></div>
       <div><dt>Captured</dt><dd>${formatTime(preview.timestamp_unix_ms)}</dd></div>
     </dl>
-    ${payloadDecodePanel(activeDecode)}
   `
+  renderSelectedDecodedPayload(activeDecode)
   bindWebSocketDecodeControls(preview)
 }
 
@@ -871,7 +891,9 @@ function renderTrafficMessages() {
     return decode.schema_message !== null && decode.fields.length > 0
   }).length
   const anomalies = allRows.reduce((count, row) => count + trafficRowAnomalies(row).length, 0)
-  const scrollStatus = autoScrollEnabled ? 'auto-scroll pauses when you scroll up' : 'auto-scroll is off'
+  const scrollStatus = autoScrollEnabled
+    ? autoScrollExchanges ? 'auto-scroll follows new messages' : 'auto-scroll paused; use the toggle to resume'
+    : 'auto-scroll is off'
 
   updateSortHeaders()
   trafficSummary.textContent = `${visibleRows.length} visible of ${trafficRows().length} traffic messages, ${resourceFilterSummary()}. ${sortDescription()}; ${scrollStatus}.`
@@ -880,8 +902,8 @@ function renderTrafficMessages() {
   summaryAnomalies.textContent = String(anomalies)
   summaryWebSockets.textContent = String(latestWebSocketPreviews.length)
   summaryFilters.textContent = activeResourceFilters.size === 0
-    ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${anomalyFilter.checked ? ', anomalies' : ''}`
-    : `${resourceFilterSummary()}${anomalyFilter.checked ? ', anomalies' : ''}`
+    ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${anomalyFilter.checked ? ', anomalies' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}`
+    : `${resourceFilterSummary()}${anomalyFilter.checked ? ', anomalies' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}`
   analyseSelectionButton.disabled = visibleRows.length === 0
 
   if (visibleWindow.length === 0) {
@@ -930,6 +952,8 @@ function renderSelectedTraffic() {
     selectedExchangeKind.textContent = 'No selection'
     copySelectedTrafficButton.disabled = true
     exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and anomalies.'
+    selectedDecodedKind.textContent = 'No selection'
+    decodedMessageContent.textContent = 'Select a traffic row to inspect its decoded protobuf JSON.'
     selectedInspectorSignature = 'none'
     return
   }
@@ -969,6 +993,14 @@ function renderSelectedTraffic() {
     selectedWebSocketPreviewId = row.preview.id
     renderSelectedWebSocketPreview()
   }
+  renderSelectedDecodedPayload(activeDecode)
+}
+
+function renderSelectedDecodedPayload(payloadDecode: PayloadDecode) {
+  const messageNames = applicationMessageEntries(payloadDecode).map((message) => friendlyMessageName(message.messageName))
+  const fallbackName = payloadDecode.schema_message ? friendlyMessageName(payloadDecode.schema_message) : payloadDecode.direction ?? 'No payload'
+  selectedDecodedKind.textContent = messageNames.length > 0 ? messageNames.join(', ') : fallbackName
+  decodedMessageContent.innerHTML = payloadDecodePanel(payloadDecode)
 }
 
 function selectedTrafficCopyText() {
@@ -1055,7 +1087,6 @@ function renderSelectedExchange() {
         </dl>
       </section>
     </div>
-    ${payloadDecodePanel(exchange.payload_decode)}
   `
 }
 
@@ -1428,6 +1459,18 @@ function trafficRowDecode(row: TrafficRow) {
   return row.kind === 'http' ? row.exchange.payload_decode : row.preview.payload_decode
 }
 
+function trafficRowMessageNames(row: TrafficRow) {
+  const payloadDecode = trafficRowDecode(row)
+  const nestedNames = applicationMessageEntries(payloadDecode).map((message) => message.messageName)
+  return nestedNames.length > 0
+    ? nestedNames
+    : payloadDecode.schema_message ? [payloadDecode.schema_message] : []
+}
+
+function isStreamingPriceV4Row(row: TrafficRow) {
+  return trafficRowMessageNames(row).some((name) => name.toLowerCase().includes('streamingpricev4'))
+}
+
 function trafficRowAnomalies(row: TrafficRow) {
   return row.kind === 'http' ? row.exchange.anomalies : []
 }
@@ -1438,6 +1481,10 @@ function filteredTrafficRows() {
   const anomaliesOnly = anomalyFilter.checked
 
   return trafficRows().filter((row) => {
+    if (!streamingPriceFilter.checked && isStreamingPriceV4Row(row)) {
+      return false
+    }
+
     if (!resourceFilterMatchesTrafficRow(row)) {
       return false
     }
@@ -2350,11 +2397,6 @@ function timelineBarLabel(exchange: HttpExchange) {
   return `${status} ${durationLabel(exchange.duration_ms)}`
 }
 
-function isScrolledToBottom(element: HTMLElement) {
-  const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight
-  return distanceFromBottom <= 8
-}
-
 function scrollExchangeTableIfNeeded(shouldAutoScroll: boolean) {
   if (!shouldAutoScroll || !autoScrollEnabled) {
     autoScrollExchanges = false
@@ -2586,29 +2628,28 @@ trafficMessages.addEventListener('click', (event) => {
   selectedTrafficKey = row.dataset.trafficKey ?? null
   selectedWebSocketDecode = null
   selectedCopyStatus.textContent = ''
+  autoScrollExchanges = false
   trafficDetail.open = true
   renderTrafficMessages()
   renderSelectedTraffic()
 })
 
 searchInput.addEventListener('input', () => {
-  autoScrollExchanges = autoScrollEnabled
+  autoScrollExchanges = false
   saveUiPreferences()
   renderTrafficMessages()
   renderSelectedTraffic()
   renderTimeline()
   renderHeatmap()
-  scrollExchangeTableIfNeeded(true)
 })
 
 protocolFilter.addEventListener('change', () => {
-  autoScrollExchanges = autoScrollEnabled
+  autoScrollExchanges = false
   saveUiPreferences()
   renderTrafficMessages()
   renderSelectedTraffic()
   renderTimeline()
   renderHeatmap()
-  scrollExchangeTableIfNeeded(true)
 })
 
 resourceFilterButtons.forEach((button) => {
@@ -2625,40 +2666,47 @@ resourceFilterButtons.forEach((button) => {
     } else {
       activeResourceFilters.add(filter)
     }
-    autoScrollExchanges = autoScrollEnabled
+    autoScrollExchanges = false
     saveUiPreferences()
     updateResourceFilterButtons()
     renderTrafficMessages()
     renderSelectedTraffic()
     renderTimeline()
     renderHeatmap()
-    scrollExchangeTableIfNeeded(true)
   })
 })
 
 anomalyFilter.addEventListener('change', () => {
-  autoScrollExchanges = autoScrollEnabled
+  autoScrollExchanges = false
   saveUiPreferences()
   renderTrafficMessages()
   renderSelectedTraffic()
   renderTimeline()
   renderHeatmap()
-  scrollExchangeTableIfNeeded(true)
+})
+
+streamingPriceFilter.addEventListener('change', () => {
+  autoScrollExchanges = false
+  saveUiPreferences()
+  renderTrafficMessages()
+  renderSelectedTraffic()
+  renderTimeline()
+  renderHeatmap()
 })
 
 clearFiltersButton.addEventListener('click', () => {
   searchInput.value = ''
   protocolFilter.value = 'all'
   anomalyFilter.checked = false
+  streamingPriceFilter.checked = true
   activeResourceFilters.clear()
   updateResourceFilterButtons()
-  autoScrollExchanges = autoScrollEnabled
+  autoScrollExchanges = false
   saveUiPreferences()
   renderTrafficMessages()
   renderSelectedTraffic()
   renderTimeline()
   renderHeatmap()
-  scrollExchangeTableIfNeeded(true)
 })
 
 exchangeTimeline.addEventListener('click', (event) => {
@@ -2669,6 +2717,7 @@ exchangeTimeline.addEventListener('click', (event) => {
 
   selectedTrafficKey = `http:${row.dataset.exchangeId ?? ''}`
   selectedCopyStatus.textContent = ''
+  autoScrollExchanges = false
   trafficDetail.open = true
   renderTrafficMessages()
   renderTimeline()
@@ -2705,10 +2754,7 @@ exchangeTableWrap.addEventListener('scroll', () => {
     return
   }
 
-  autoScrollExchanges = isScrolledToBottom(exchangeTableWrap)
-  if (!autoScrollEnabled) {
-    autoScrollExchanges = false
-  }
+  autoScrollExchanges = false
 })
 
 viewButtons.forEach((button) => {
@@ -2743,11 +2789,10 @@ sortHeaderButtons.forEach((button) => {
       sortDirection = 'asc'
     }
 
-    autoScrollExchanges = autoScrollEnabled && sortKey === 'started_at' && sortDirection === 'asc'
+    autoScrollExchanges = false
     renderTrafficMessages()
     renderSelectedTraffic()
     renderTimeline()
-    scrollExchangeTableIfNeeded(autoScrollExchanges)
   })
 })
 

@@ -1029,6 +1029,55 @@ h3 {
   box-shadow: none;
 }
 
+.traffic-detail-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.detail-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.detail-summary::-webkit-details-marker {
+  display: none;
+}
+
+.detail-summary::before {
+  content: ">";
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+  font-size: 18px;
+  font-weight: 800;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+
+.traffic-detail-panel[open] .detail-summary::before {
+  transform: rotate(90deg);
+}
+
+.detail-summary-title {
+  flex: 1 1 auto;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.detail-panel-content {
+  padding: 0 14px 14px;
+}
+
+.detail-panel-content > .detail-heading-actions {
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
 .diagnostics-panel {
   margin-top: 12px;
   border: 1px solid var(--border);

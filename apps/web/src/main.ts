@@ -155,7 +155,7 @@ type WebSocketProtoMapping = {
 
 type TrafficView = 'table' | 'timeline' | 'heatmap'
 type Workspace = 'traffic' | 'schemas' | 'runtime'
-type SortKey = 'started_at' | 'name' | 'method' | 'host' | 'status' | 'type' | 'initiator' | 'size' | 'time' | 'decode' | 'findings'
+type SortKey = 'started_at' | 'name' | 'method' | 'host' | 'status' | 'type' | 'initiator' | 'size' | 'time' | 'decode' | 'anomalies'
 type SortDirection = 'asc' | 'desc'
 type ResourceFilter = 'all' | 'fetch' | 'document' | 'js' | 'css' | 'image' | 'font' | 'media' | 'ws' | 'protobuf' | 'json' | 'other'
 type HttpResourceKind = Exclude<ResourceFilter, 'all' | 'ws'>
@@ -263,7 +263,7 @@ app.innerHTML = `
         <section class="traffic-summary-strip" aria-label="Capture summary">
           <div class="summary-stat"><span>Messages</span><strong id="summary-messages">0</strong></div>
           <div class="summary-stat"><span>Decoded</span><strong id="summary-decoded">0</strong></div>
-          <div class="summary-stat"><span>Anomalies</span><strong id="summary-findings">0</strong></div>
+          <div class="summary-stat"><span>Anomalies</span><strong id="summary-anomalies">0</strong></div>
           <div class="summary-stat"><span>WebSockets</span><strong id="summary-websockets">0</strong></div>
           <div class="summary-stat summary-stat-wide"><span>Active filters</span><strong id="summary-filters">All traffic</strong></div>
         </section>
@@ -282,7 +282,7 @@ app.innerHTML = `
                   <th><button class="sort-header" type="button" data-sort-key="method">Method</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="host">Host</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="decode">Decode</button></th>
-                  <th><button class="sort-header" type="button" data-sort-key="findings">Anomalies</button></th>
+                  <th><button class="sort-header" type="button" data-sort-key="anomalies">Anomalies</button></th>
                 </tr>
               </thead>
               <tbody id="traffic-messages">
@@ -309,19 +309,21 @@ app.innerHTML = `
           <p>Next slice: bucket traffic by host, message type, latency, and error density.</p>
         </div>
 
-        <section class="detail-panel" aria-label="Selected exchange">
-          <div class="panel-heading">
-            <h2>Traffic Detail</h2>
+        <details id="traffic-detail" class="detail-panel traffic-detail-panel" aria-label="Selected exchange">
+          <summary class="detail-summary">
+            <span class="detail-summary-title">Traffic Detail</span>
+            <span id="selected-exchange-kind" class="small-value">No selection</span>
+          </summary>
+          <div class="detail-panel-content">
             <div class="detail-heading-actions">
-              <span id="selected-exchange-kind" class="small-value">No selection</span>
-              <button id="copy-selected-traffic" class="quiet-button" type="button" disabled>Copy</button>
+              <button id="copy-selected-traffic" class="quiet-button" type="button" disabled>Copy decoded JSON</button>
             </div>
+            <div id="exchange-detail" class="detail-content">
+              Select a traffic row to inspect request, response, payload preview, and anomalies.
+            </div>
+            <p id="selected-copy-status" class="status-message" role="status" aria-live="polite"></p>
           </div>
-          <div id="exchange-detail" class="detail-content">
-            Select a traffic row to inspect request, response, payload preview, and anomalies.
-          </div>
-          <p id="selected-copy-status" class="status-message" role="status" aria-live="polite"></p>
-        </section>
+        </details>
 
         <details class="diagnostics-panel">
           <summary>Capture diagnostics</summary>
@@ -594,7 +596,7 @@ const analyseSelectionButton = document.querySelector<HTMLButtonElement>('#analy
 const trafficSummary = document.querySelector<HTMLElement>('#traffic-summary')!
 const summaryMessages = document.querySelector<HTMLElement>('#summary-messages')!
 const summaryDecoded = document.querySelector<HTMLElement>('#summary-decoded')!
-const summaryFindings = document.querySelector<HTMLElement>('#summary-findings')!
+const summaryAnomalies = document.querySelector<HTMLElement>('#summary-anomalies')!
 const summaryWebSockets = document.querySelector<HTMLElement>('#summary-websockets')!
 const summaryFilters = document.querySelector<HTMLElement>('#summary-filters')!
 const autoScrollToggle = document.querySelector<HTMLInputElement>('#auto-scroll-toggle')!
@@ -606,6 +608,7 @@ const sortHeaderButtons = document.querySelectorAll<HTMLButtonElement>('.sort-he
 const selectedExchangeKind = document.querySelector<HTMLElement>('#selected-exchange-kind')!
 const copySelectedTrafficButton = document.querySelector<HTMLButtonElement>('#copy-selected-traffic')!
 const selectedCopyStatus = document.querySelector<HTMLElement>('#selected-copy-status')!
+const trafficDetail = document.querySelector<HTMLDetailsElement>('#traffic-detail')!
 const exchangeDetail = document.querySelector<HTMLElement>('#exchange-detail')!
 const heatmapGrid = document.querySelector<HTMLElement>('#heatmap-grid')!
 const schemaChip = document.querySelector<HTMLElement>('#schema-chip')!
@@ -675,7 +678,7 @@ function setTheme(theme: 'light' | 'dark') {
 }
 
 const savedUiPreferences = readUiPreferences()
-setTheme(savedUiPreferences.theme === 'dark' ? 'dark' : 'light')
+setTheme(savedUiPreferences.theme === 'light' ? 'light' : 'dark')
 searchInput.value = savedUiPreferences.search ?? ''
 protocolFilter.value = savedUiPreferences.protocol && [...protocolFilter.options].some((option) => option.value === savedUiPreferences.protocol)
   ? savedUiPreferences.protocol
@@ -769,8 +772,11 @@ function renderEvents(summary: ProxyEventSummary) {
     : 'No WebSockets'
   renderTrafficMessages()
   renderSelectedTraffic()
-  renderTimeline()
-  renderHeatmap()
+  if (activeView === 'timeline') {
+    renderTimeline()
+  } else if (activeView === 'heatmap') {
+    renderHeatmap()
+  }
   scrollExchangeTableIfNeeded(shouldAutoScroll)
 
   eventsList.innerHTML = summary.events
@@ -864,14 +870,14 @@ function renderTrafficMessages() {
     const decode = trafficRowDecode(row)
     return decode.schema_message !== null && decode.fields.length > 0
   }).length
-  const findings = allRows.reduce((count, row) => count + trafficRowAnomalies(row).length, 0)
+  const anomalies = allRows.reduce((count, row) => count + trafficRowAnomalies(row).length, 0)
   const scrollStatus = autoScrollEnabled ? 'auto-scroll pauses when you scroll up' : 'auto-scroll is off'
 
   updateSortHeaders()
   trafficSummary.textContent = `${visibleRows.length} visible of ${trafficRows().length} traffic messages, ${resourceFilterSummary()}. ${sortDescription()}; ${scrollStatus}.`
   summaryMessages.textContent = String(allRows.length)
   summaryDecoded.textContent = String(decodedRows)
-  summaryFindings.textContent = String(findings)
+  summaryAnomalies.textContent = String(anomalies)
   summaryWebSockets.textContent = String(latestWebSocketPreviews.length)
   summaryFilters.textContent = activeResourceFilters.size === 0
     ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${anomalyFilter.checked ? ', anomalies' : ''}`
@@ -928,7 +934,27 @@ function renderSelectedTraffic() {
     return
   }
 
-  const signature = JSON.stringify({ row, selectedWebSocketDecode })
+  const payloadDecode = row.kind === 'http' ? row.exchange.payload_decode : row.preview.payload_decode
+  const activeDecode = selectedWebSocketDecode ?? payloadDecode
+  const signature = JSON.stringify({
+    key: selectedTrafficKey,
+    status: activeDecode.status,
+    schemaMessage: activeDecode.schema_message,
+    fieldCount: activeDecode.fields.length,
+    jsonPreviewCount: activeDecode.json_previews.length,
+    transport: row.kind === 'http'
+      ? {
+          status: row.exchange.status,
+          duration: row.exchange.duration_ms,
+          requestBody: row.exchange.request_body_len,
+          responseBody: row.exchange.response_body_len,
+          anomalies: row.exchange.anomalies.map((anomaly) => `${anomaly.kind}:${anomaly.summary}`),
+        }
+      : {
+          timestamp: row.preview.timestamp_unix_ms,
+          bodyLength: row.preview.body_len,
+        },
+  })
   if (signature === selectedInspectorSignature) {
     return
   }
@@ -1630,7 +1656,7 @@ function sortValue(exchange: HttpExchange, key: SortKey): string | number {
       return exchange.duration_ms ?? -1
     case 'decode':
       return exchange.payload_decode.status
-    case 'findings':
+    case 'anomalies':
       return exchange.anomalies.length
   }
 }
@@ -2046,16 +2072,28 @@ function trafficSortValue(row: TrafficRow, key: SortKey): string | number {
       return -1
     case 'decode':
       return row.preview.payload_decode.status
-    case 'findings':
+    case 'anomalies':
       return 0
   }
 }
 
 function decodeLabel(payloadDecode: PayloadDecode) {
-  const message = payloadDecode.schema_message
-    ? `<strong class="decode-message">${escapeHtml(shortMessageName(payloadDecode.schema_message))}</strong><br>`
-    : ''
-  return `${message}<span>${escapeHtml(payloadDecode.status)}</span>`
+  const applicationNames = applicationMessageEntries(payloadDecode)
+    .map((message) => friendlyMessageName(message.messageName))
+  const messageNames = [...new Set(applicationNames.length > 0
+    ? applicationNames
+    : payloadDecode.schema_message
+      ? [friendlyMessageName(payloadDecode.schema_message)]
+      : [])]
+
+  if (messageNames.length === 0) {
+    return '<span class="muted">Undecoded</span>'
+  }
+
+  const visibleNames = messageNames.slice(0, 2)
+  const remainingCount = messageNames.length - visibleNames.length
+  const suffix = remainingCount > 0 ? ` +${remainingCount} more` : ''
+  return `<strong class="decode-message" title="${escapeHtml(messageNames.join(', '))}">${escapeHtml(visibleNames.join(', '))}${suffix}</strong>`
 }
 
 function hostWithoutPort(authority: string | null) {
@@ -2207,6 +2245,11 @@ function setActiveView(view: TrafficView) {
   document.querySelectorAll<HTMLElement>('.data-view').forEach((viewElement) => {
     viewElement.classList.toggle('active', viewElement.id === `${activeView}-view`)
   })
+  if (activeView === 'timeline') {
+    renderTimeline()
+  } else if (activeView === 'heatmap') {
+    renderHeatmap()
+  }
 }
 
 function setActiveWorkspace(workspace: Workspace) {
@@ -2543,6 +2586,7 @@ trafficMessages.addEventListener('click', (event) => {
   selectedTrafficKey = row.dataset.trafficKey ?? null
   selectedWebSocketDecode = null
   selectedCopyStatus.textContent = ''
+  trafficDetail.open = true
   renderTrafficMessages()
   renderSelectedTraffic()
 })
@@ -2625,6 +2669,7 @@ exchangeTimeline.addEventListener('click', (event) => {
 
   selectedTrafficKey = `http:${row.dataset.exchangeId ?? ''}`
   selectedCopyStatus.textContent = ''
+  trafficDetail.open = true
   renderTrafficMessages()
   renderTimeline()
   renderSelectedTraffic()
@@ -2641,6 +2686,7 @@ clearCaptureButton.addEventListener('click', async () => {
     selectedWebSocketDecode = null
     selectedInspectorSignature = null
     selectedCopyStatus.textContent = ''
+    trafficDetail.open = false
     autoScrollExchanges = true
     await refresh()
   } finally {

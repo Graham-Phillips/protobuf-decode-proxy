@@ -140,3 +140,93 @@ Capture diagnostics.
 - [ ] Update this checklist with completed work, remaining issues, and the exact
   build/sample used for verification. Keep notes short; do not add unrelated
   product plans.
+
+## 6. UI refinement and usability
+
+The current UI is still an engineering prototype. The primary measure of
+progress is whether a user can quickly find a message, understand what it is,
+and inspect the useful data without navigating through unrelated detail.
+
+- [ ] Audit the main page for unhelpful or duplicated data. Remove it from the
+  default view or move advanced transport, diagnostics, and schema setup into
+  secondary views/pages.
+- [x] Add dark mode with a clear theme control and persisted preference. Check
+  tables, code blocks, empty states, dialogs, and status messages in both themes.
+- [x] Add a compact summary box showing the current capture state and the most
+  useful counts, such as messages, decoded messages, errors, and active filters.
+- [x] Add an explicit auto-scroll toggle. Preserve the current scroll position
+  when auto-scroll is disabled and make the enabled/disabled state obvious.
+- [ ] Make messages easier to understand: use friendly names alongside the
+  fully-qualified protobuf type, distinguish request/response/frame context,
+  surface decode failures clearly, and keep raw wire data secondary.
+- [x] Persist filter settings across refreshes and app restarts. Define which
+  settings are global and which belong to a workspace or capture session.
+- [ ] Verify the 1.5-second refresh behavior. Confirm whether the current
+  implementation rewrites the whole screen; update only changed rows/panels,
+  and preserve selection, scroll position, expanded sections, and input focus.
+- [ ] Add focused UI tests for filtering, theme changes, refresh preservation,
+  selection, and empty/error states.
+
+## 7. Capture and log workflow
+
+- [ ] Add a way to save captured data to a log file. Define the log format,
+  metadata, schema references, raw payload retention, and whether decoded data
+  is stored as a derived view.
+- [ ] Allow users to select individual traffic/messages or a range of lines and
+  save only the selected data to a file.
+- [ ] Add recording mode: for a selected request, save the request and its
+  matching response as a reusable request/response set.
+- [ ] Define how a request/response set is represented by a directory and its
+  contents, including naming, metadata, ordering, and incomplete pairs.
+- [ ] Make pairing behavior explicit for missing responses, duplicate requests,
+  streaming messages, and WebSocket traffic.
+
+## 8. Operating modes
+
+### Real-time decode
+
+- [ ] Support live proxy capture and decode as the default real-time workflow.
+- [ ] Add optional log recording while real-time decoding is active.
+- [ ] Keep capture status, refresh interval, dropped data, and decode errors
+  visible without crowding the message inspector.
+
+### Log decode
+
+- [ ] Add an open-log workflow for one or more log files.
+- [ ] Support file picker and drag-and-drop input.
+- [ ] Define and implement supported archives/containers, including `.zip`,
+  `.dat`, and timezone-aware `.tz` data where applicable.
+- [ ] Show the selected log/set, decode progress, malformed entries, and source
+  file for each message.
+
+### Dev server / offline local mode
+
+- [ ] Add a mode for selecting the current offline request/response set.
+- [ ] Implement request-to-response mapping backed by a directory of fixtures.
+- [ ] Support partial offline mode where mapped requests are served locally but
+  authentication/login still uses the real server.
+- [ ] Support response sequences for typical requests, including changing
+  responses over time and mappings to a folder of responses.
+- [ ] Define keep-alive behavior and connection/session lifecycle for offline
+  responses.
+- [ ] Define how JWTs and other authentication state are handled in offline and
+  partial-offline modes.
+- [ ] Support price subscriptions, price responses, and configurable price
+  generators for development scenarios.
+- [ ] Add workflows to edit an existing response map/set and generate a new
+  response map/set from recorded traffic.
+- [ ] Make the active set, mapping result, fallback-to-server behavior, and
+  replay/sequence position visible and auditable.
+
+## 9. Mode and format design decisions
+
+- [ ] Choose a versioned log format that can preserve raw traffic, decoded JSON,
+  schema identity, timestamps, direction, and request/response correlation.
+- [ ] Decide whether log archives are opened in place or extracted into a
+  managed workspace, and how large files are handled safely.
+- [ ] Define the persistence boundary for UI preferences, capture sessions,
+  logs, request/response sets, and offline-server configuration.
+- [ ] Define the refresh/update model before optimizing the UI: full snapshot,
+  incremental events, or a hybrid approach.
+- [ ] Add end-to-end fixtures covering real-time capture, saved logs, replay,
+  partial offline mode, response sequences, and missing/ambiguous mappings.

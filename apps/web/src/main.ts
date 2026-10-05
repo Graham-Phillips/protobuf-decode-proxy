@@ -189,6 +189,7 @@ app.innerHTML = `
           <span class="status-dot" aria-hidden="true"></span>
           <span>No WebSockets</span>
         </span>
+        <button id="theme-toggle" class="quiet-button" type="button" aria-pressed="false">Dark mode</button>
       </div>
     </header>
 
@@ -246,6 +247,10 @@ app.innerHTML = `
             <p id="traffic-summary">Waiting for traffic. Oldest exchanges appear first.</p>
           </div>
           <div class="workbench-actions">
+            <label class="check-row toolbar-toggle">
+              <input id="auto-scroll-toggle" type="checkbox" checked>
+              <span>Auto-scroll</span>
+            </label>
             <div class="view-switch" aria-label="Display mode">
               <button class="view-button active" type="button" data-view="table">Table</button>
               <button class="view-button" type="button" data-view="timeline">Timeline</button>
@@ -254,6 +259,14 @@ app.innerHTML = `
             <button id="clear-capture" class="quiet-button" type="button">Clear Capture</button>
           </div>
         </div>
+
+        <section class="traffic-summary-strip" aria-label="Capture summary">
+          <div class="summary-stat"><span>Messages</span><strong id="summary-messages">0</strong></div>
+          <div class="summary-stat"><span>Decoded</span><strong id="summary-decoded">0</strong></div>
+          <div class="summary-stat"><span>Findings</span><strong id="summary-findings">0</strong></div>
+          <div class="summary-stat"><span>WebSockets</span><strong id="summary-websockets">0</strong></div>
+          <div class="summary-stat summary-stat-wide"><span>Active filters</span><strong id="summary-filters">All traffic</strong></div>
+        </section>
 
         <div id="table-view" class="data-view active">
           <div id="exchange-table-wrap" class="exchange-table-wrap">
@@ -517,6 +530,7 @@ app.innerHTML = `
 `
 
 const proxyState = document.querySelector<HTMLElement>('#proxy-state')!
+const themeToggle = document.querySelector<HTMLButtonElement>('#theme-toggle')!
 const proxyAddress = document.querySelector<HTMLElement>('#proxy-address')!
 const proxyCa = document.querySelector<HTMLElement>('#proxy-ca')!
 const caStorage = document.querySelector<HTMLElement>('#ca-storage')!
@@ -578,6 +592,12 @@ const clearFiltersButton = document.querySelector<HTMLButtonElement>('#clear-fil
 const clearCaptureButton = document.querySelector<HTMLButtonElement>('#clear-capture')!
 const analyseSelectionButton = document.querySelector<HTMLButtonElement>('#analyse-selection')!
 const trafficSummary = document.querySelector<HTMLElement>('#traffic-summary')!
+const summaryMessages = document.querySelector<HTMLElement>('#summary-messages')!
+const summaryDecoded = document.querySelector<HTMLElement>('#summary-decoded')!
+const summaryFindings = document.querySelector<HTMLElement>('#summary-findings')!
+const summaryWebSockets = document.querySelector<HTMLElement>('#summary-websockets')!
+const summaryFilters = document.querySelector<HTMLElement>('#summary-filters')!
+const autoScrollToggle = document.querySelector<HTMLInputElement>('#auto-scroll-toggle')!
 const resourceFilterButtons = document.querySelectorAll<HTMLButtonElement>('[data-resource-filter]')
 const workspaceButtons = document.querySelectorAll<HTMLButtonElement>('[data-workspace-target]')
 const workspaceViews = document.querySelectorAll<HTMLElement>('.workspace-view')
@@ -611,6 +631,60 @@ let programmaticExchangeScroll = false
 let sortKey: SortKey = 'started_at'
 let sortDirection: SortDirection = 'asc'
 let activeResourceFilters = new Set<ResourceFilter>()
+let autoScrollEnabled = true
+
+const uiPreferencesKey = 'protobuf-decoder-ui-preferences-v1'
+
+type UiPreferences = {
+  theme?: 'light' | 'dark'
+  search?: string
+  protocol?: string
+  anomaliesOnly?: boolean
+  resourceFilters?: ResourceFilter[]
+  autoScroll?: boolean
+}
+
+function readUiPreferences(): UiPreferences {
+  try {
+    const stored = localStorage.getItem(uiPreferencesKey)
+    return stored ? JSON.parse(stored) as UiPreferences : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveUiPreferences() {
+  try {
+    localStorage.setItem(uiPreferencesKey, JSON.stringify({
+      theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
+      search: searchInput.value,
+      protocol: protocolFilter.value,
+      anomaliesOnly: anomalyFilter.checked,
+      resourceFilters: [...activeResourceFilters],
+      autoScroll: autoScrollEnabled,
+    } satisfies UiPreferences))
+  } catch {
+    // Preferences are optional in restricted webviews.
+  }
+}
+
+function setTheme(theme: 'light' | 'dark') {
+  document.documentElement.dataset.theme = theme
+  themeToggle.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode'
+  themeToggle.setAttribute('aria-pressed', String(theme === 'dark'))
+}
+
+const savedUiPreferences = readUiPreferences()
+setTheme(savedUiPreferences.theme === 'dark' ? 'dark' : 'light')
+searchInput.value = savedUiPreferences.search ?? ''
+protocolFilter.value = savedUiPreferences.protocol && [...protocolFilter.options].some((option) => option.value === savedUiPreferences.protocol)
+  ? savedUiPreferences.protocol
+  : 'all'
+anomalyFilter.checked = savedUiPreferences.anomaliesOnly === true
+activeResourceFilters = new Set((savedUiPreferences.resourceFilters ?? []).filter((filter) => filter !== 'all'))
+autoScrollEnabled = savedUiPreferences.autoScroll !== false
+autoScrollToggle.checked = autoScrollEnabled
+updateResourceFilterButtons()
 
 async function refresh() {
   if (refreshInFlight) {
@@ -681,7 +755,7 @@ async function refreshProxy() {
 function renderEvents(summary: ProxyEventSummary) {
   latestExchanges = summary.http_exchanges
   latestWebSocketPreviews = summary.websocket_message_previews
-  const shouldAutoScroll = autoScrollExchanges || isScrolledToBottom(exchangeTableWrap)
+  const shouldAutoScroll = autoScrollEnabled && (autoScrollExchanges || isScrolledToBottom(exchangeTableWrap))
   eventTotal.textContent = String(summary.total)
   httpRequests.textContent = String(summary.http_requests)
   httpResponses.textContent = String(summary.http_responses)
@@ -785,9 +859,23 @@ function renderTrafficMessages() {
   const visibleWindow = sortedRows
   const scrollTopBeforeRender = exchangeTableWrap.scrollTop
   const shouldPreserveScroll = !autoScrollExchanges
+  const allRows = trafficRows()
+  const decodedRows = allRows.filter((row) => {
+    const decode = trafficRowDecode(row)
+    return decode.schema_message !== null && decode.fields.length > 0
+  }).length
+  const findings = allRows.reduce((count, row) => count + trafficRowAnomalies(row).length, 0)
+  const scrollStatus = autoScrollEnabled ? 'auto-scroll pauses when you scroll up' : 'auto-scroll is off'
 
   updateSortHeaders()
-  trafficSummary.textContent = `${visibleRows.length} visible of ${trafficRows().length} traffic messages, ${resourceFilterSummary()}. ${sortDescription()}; auto-scroll pauses when you scroll up.`
+  trafficSummary.textContent = `${visibleRows.length} visible of ${trafficRows().length} traffic messages, ${resourceFilterSummary()}. ${sortDescription()}; ${scrollStatus}.`
+  summaryMessages.textContent = String(allRows.length)
+  summaryDecoded.textContent = String(decodedRows)
+  summaryFindings.textContent = String(findings)
+  summaryWebSockets.textContent = String(latestWebSocketPreviews.length)
+  summaryFilters.textContent = activeResourceFilters.size === 0
+    ? `${protocolFilter.value === 'all' ? 'All types' : protocolFilter.value}${anomalyFilter.checked ? ', findings' : ''}`
+    : `${resourceFilterSummary()}${anomalyFilter.checked ? ', findings' : ''}`
   analyseSelectionButton.disabled = visibleRows.length === 0
 
   if (visibleWindow.length === 0) {
@@ -974,7 +1062,7 @@ function jsonPreviewPanel(payloadDecode: PayloadDecode) {
 function payloadDecodePanel(payloadDecode: PayloadDecode) {
   const applicationMessages = applicationMessageEntries(payloadDecode)
 
-  if (applicationMessages.length === 0) {
+  if (applicationMessages.length === 0 && (!payloadDecode.schema_message || payloadDecode.fields.length === 0)) {
     return `
       ${jsonPreviewPanel(payloadDecode)}
       <div class="decode-preview">
@@ -988,23 +1076,45 @@ function payloadDecodePanel(payloadDecode: PayloadDecode) {
     `
   }
 
-  const messageJson = applicationMessages.map((message) => ({
-    messageType: friendlyMessageName(message.messageName),
-    protobufType: message.messageName,
-    fields: protobufFieldsToObject(message.fields),
-  }))
+  const messageJson = applicationMessages.length > 0
+    ? applicationMessages.map((message) => ({
+        messageType: friendlyMessageName(message.messageName),
+        protobufType: message.messageName,
+        fields: protobufFieldsToObject(message.fields),
+      }))
+    : [{
+        messageType: payloadDecode.schema_message ? friendlyMessageName(payloadDecode.schema_message) : null,
+        protobufType: payloadDecode.schema_message,
+        fields: protobufFieldsToObject(payloadDecode.fields),
+      }]
+  const compactJson = JSON.stringify(messageJson)
+  const formattedJson = JSON.stringify(messageJson, null, 2)
+  const rawFieldsLabel = applicationMessages.length > 0 ? 'Raw envelope fields' : 'Raw protobuf fields'
 
   return `
     ${jsonPreviewPanel(payloadDecode)}
     <div class="decode-preview">
       <div class="panel-heading">
-        <h3>Decoded protobuf messages</h3>
-        <span class="small-value">${applicationMessages.length} message${applicationMessages.length === 1 ? '' : 's'}</span>
+        <h3>Decoded protobuf JSON</h3>
+        <span class="small-value">${messageJson.length} message${messageJson.length === 1 ? '' : 's'}</span>
       </div>
       <p>${escapeHtml(payloadDecode.status)}</p>
-      <pre class="decoded-json" aria-label="Decoded protobuf messages">${escapeHtml(JSON.stringify(messageJson, null, 2))}</pre>
+      <div class="json-output-block">
+        <div class="json-preview-heading">
+          <strong>JSON string</strong>
+          <span>compact</span>
+        </div>
+        <pre class="json-compact" aria-label="Decoded protobuf JSON string">${escapeHtml(compactJson)}</pre>
+      </div>
+      <div class="json-output-block">
+        <div class="json-preview-heading">
+          <strong>Formatted JSON</strong>
+          <span>pretty-printed</span>
+        </div>
+        <pre class="decoded-json" aria-label="Formatted decoded protobuf JSON">${escapeHtml(formattedJson)}</pre>
+      </div>
       <details class="raw-protobuf-preview">
-        <summary>Raw envelope fields</summary>
+        <summary>${rawFieldsLabel}</summary>
         ${protobufFieldTable(payloadDecode.fields)}
       </details>
     </div>
@@ -2203,7 +2313,7 @@ function isScrolledToBottom(element: HTMLElement) {
 }
 
 function scrollExchangeTableIfNeeded(shouldAutoScroll: boolean) {
-  if (!shouldAutoScroll) {
+  if (!shouldAutoScroll || !autoScrollEnabled) {
     autoScrollExchanges = false
     return
   }
@@ -2215,6 +2325,19 @@ function scrollExchangeTableIfNeeded(shouldAutoScroll: boolean) {
   }, 0)
   autoScrollExchanges = true
 }
+
+themeToggle.addEventListener('click', () => {
+  const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
+  setTheme(nextTheme)
+  saveUiPreferences()
+})
+
+autoScrollToggle.addEventListener('change', () => {
+  autoScrollEnabled = autoScrollToggle.checked
+  autoScrollExchanges = autoScrollEnabled
+  saveUiPreferences()
+  scrollExchangeTableIfNeeded(autoScrollEnabled)
+})
 
 exportCaButton.addEventListener('click', async () => {
   exportCaButton.disabled = true
@@ -2425,7 +2548,8 @@ trafficMessages.addEventListener('click', (event) => {
 })
 
 searchInput.addEventListener('input', () => {
-  autoScrollExchanges = true
+  autoScrollExchanges = autoScrollEnabled
+  saveUiPreferences()
   renderTrafficMessages()
   renderSelectedTraffic()
   renderTimeline()
@@ -2434,7 +2558,8 @@ searchInput.addEventListener('input', () => {
 })
 
 protocolFilter.addEventListener('change', () => {
-  autoScrollExchanges = true
+  autoScrollExchanges = autoScrollEnabled
+  saveUiPreferences()
   renderTrafficMessages()
   renderSelectedTraffic()
   renderTimeline()
@@ -2456,7 +2581,8 @@ resourceFilterButtons.forEach((button) => {
     } else {
       activeResourceFilters.add(filter)
     }
-    autoScrollExchanges = true
+    autoScrollExchanges = autoScrollEnabled
+    saveUiPreferences()
     updateResourceFilterButtons()
     renderTrafficMessages()
     renderSelectedTraffic()
@@ -2467,7 +2593,8 @@ resourceFilterButtons.forEach((button) => {
 })
 
 anomalyFilter.addEventListener('change', () => {
-  autoScrollExchanges = true
+  autoScrollExchanges = autoScrollEnabled
+  saveUiPreferences()
   renderTrafficMessages()
   renderSelectedTraffic()
   renderTimeline()
@@ -2481,7 +2608,8 @@ clearFiltersButton.addEventListener('click', () => {
   anomalyFilter.checked = false
   activeResourceFilters.clear()
   updateResourceFilterButtons()
-  autoScrollExchanges = true
+  autoScrollExchanges = autoScrollEnabled
+  saveUiPreferences()
   renderTrafficMessages()
   renderSelectedTraffic()
   renderTimeline()
@@ -2532,6 +2660,9 @@ exchangeTableWrap.addEventListener('scroll', () => {
   }
 
   autoScrollExchanges = isScrolledToBottom(exchangeTableWrap)
+  if (!autoScrollEnabled) {
+    autoScrollExchanges = false
+  }
 })
 
 viewButtons.forEach((button) => {
@@ -2566,7 +2697,7 @@ sortHeaderButtons.forEach((button) => {
       sortDirection = 'asc'
     }
 
-    autoScrollExchanges = sortKey === 'started_at' && sortDirection === 'asc'
+    autoScrollExchanges = autoScrollEnabled && sortKey === 'started_at' && sortDirection === 'asc'
     renderTrafficMessages()
     renderSelectedTraffic()
     renderTimeline()

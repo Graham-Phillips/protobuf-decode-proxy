@@ -12,10 +12,10 @@ reports that recent decoding changes have not fixed this in the running exe.
 
 Traffic Detail mostly shows request/response information without useful message
 context. Payload Preview still shows generic wire fields. Event Timeline's
-purpose relative to Traffic is unclear. WebSocket Messages looks like another
-copy of Traffic with the Proto filter selected, and Frame Detail introduces a
-second payload preview. Frame decoding currently depends on loading a descriptor
-set.
+purpose relative to Traffic is unclear. The combined Traffic table now includes
+WebSocket messages, but the selected-message inspector still contains
+WebSocket-specific controls and duplicate transport context. Frame decoding
+currently depends on loading a descriptor set.
 
 The desired default workflow is: see messages, filter them, recognize their
 types in the table, then select one to inspect decoded field names and contents.
@@ -79,10 +79,22 @@ message decoding (nested rows are flattened in this copied example):
 - [ ] If only generated code or embedded descriptors exist, assess whether they
   can supply a reliable schema. Use explicit mappings when the schema exists
   but the message identity cannot be determined automatically.
+- [ ] Treat a missing user-supplied `.pb` file separately from a missing schema:
+  investigate the platform and URL Generator decoder/encoder implementations as
+  an application-owned codec source, including embedded descriptors, generated
+  message code, ordinal/version maps, and envelope rules.
+- [ ] Define versioned codec packs or adapters so Rust and JavaScript can use the
+  same message identity, typed field model, decode behavior, and encode behavior.
+  Record the codec/build version used for every decoded or encoded message.
+- [ ] Support protobuf encoding from edited decoded data when a compatible
+  platform codec or descriptor is available. For unknown message types, allow
+  raw replay or wire inspection but do not claim that arbitrary encoding is safe.
 - [ ] If schema information is unavailable, keep a useful wire inspection and
-  state the missing information. Raw protobuf bytes alone cannot reliably
-  recover original field names, exact types, or message identities. Do not
-  present guessed names or wire interpretations as confirmed decoding.
+  state whether the missing source is a user descriptor, bundled platform codec,
+  message mapping, or incompatible codec version. Raw protobuf bytes alone
+  cannot reliably recover original field names, exact types, or message
+  identities. Do not present guessed names or wire interpretations as confirmed
+  decoding.
 - [ ] Show a concrete reason when decoding fails, such as missing schema,
   unmatched envelope ordinal/version, ambiguous mapping, or malformed payload,
   and give the user an actionable next step.
@@ -94,6 +106,13 @@ message decoding (nested rows are flattened in this copied example):
   when identity cannot be established.
 - [ ] On selection, show named fields and values with nested/repeated structures
   intact. Make raw bytes and wire inspection secondary views of that message.
+- [ ] Render protobuf request and response content independently: show the
+  request message name and parameters, then the response message name and
+  payload. For WebSocket traffic, show one message with direction rather than
+  implying an HTTP-style request/response pair.
+- [ ] Provide a single payload view toggle between formatted JSON and compact
+  JSON string. Both views must come from the same typed decoded message, not
+  from parsing display-preview strings.
 - [ ] Include useful context: direction, host/path, connection, timestamp, and
   envelope type/version where available. Do not imply request/response pairing
   for WebSocket messages unless there is evidence supporting that relationship.
@@ -117,6 +136,43 @@ message decoding (nested rows are flattened in this copied example):
   table on the default page. Capture diagnostics are collapsed by default.
 - [x] Keep schema setup and advanced diagnostics accessible without expanding
   them into the main message browsing workflow.
+- [ ] Decide whether Traffic Detail adds information beyond the main Traffic
+  table and selected protobuf payload. Hide, collapse, or redesign duplicate
+  content so the default view stays focused on message data.
+- [ ] Audit the WebSocket inspector controls: define the purpose of Decode Frame,
+  decoded export path, Save Mapping, and Export Decoded JSON. Move genuinely
+  advanced transport/schema actions behind an advanced section or remove
+  controls that duplicate the main workflow.
+- [ ] Add a Sessions panel listing session IDs found in the current data set.
+  Selecting a session must jump to the response/message that introduced or
+  included that session ID, with clear behavior for multiple matches.
+- [ ] Add traffic filters for unknown/undecoded messages, dead calls, and errors.
+  Provide an explicit Errors-only toggle and define how pending, missing,
+  cancelled, and failed calls are classified.
+- [ ] Add a dual request/response view with requests on the left and responses
+  on the right, aligned by correlation so the matching response sits beside its
+  request. Keep WebSocket messages as a direction-aware stream when no pairing
+  evidence exists.
+- [ ] Add text search over message names, paths, session IDs, decoded keys and
+  values, and useful transport metadata. Selecting a result must select the
+  underlying Traffic row.
+- [x] Clarify the Resource `Proto` filter versus Payload `protobuf` filter. The
+  UI now labels them as `Proto resource` and `Payload type: Protobuf`; revisit
+  the underlying predicates if real captures show they are still equivalent.
+- [ ] Fix Capture diagnostics jumping to the latest message during refresh. Keep
+  the user's diagnostics scroll position unless they explicitly request latest.
+- [ ] Stop traffic-window auto-follow when a message is selected, while keeping
+  the explicit auto-scroll toggle available to resume following new messages.
+- [ ] Match the `wfe-central:tools:Packetlog viewer` filtering model for Connect
+  and mobile-server calls, highlight Connect API traffic, and then add clearer
+  message identity, decoded JSON, and anomaly context than the existing tool.
+- [x] Rename user-facing `Findings` terminology to `Anomalies` consistently in
+  filters, columns, summaries, and detail panels.
+- [ ] Add stable, accessible session colors in the Traffic table and inspector,
+  with a legend or other way to avoid relying on color alone.
+- [ ] Reduce the Decode section to a compact success/unknown/error state in the
+  default view. Put detailed status, mapping evidence, and raw wire fields in a
+  collapsed advanced section.
 
 Implementation note: the Traffic page now uses one combined HTTP/WebSocket
 message table and one selected-message inspector. Event Timeline remains an
@@ -140,3 +196,106 @@ Capture diagnostics.
 - [ ] Update this checklist with completed work, remaining issues, and the exact
   build/sample used for verification. Keep notes short; do not add unrelated
   product plans.
+
+## 6. UI refinement and usability
+
+The current UI is still an engineering prototype. The primary measure of
+progress is whether a user can quickly find a message, understand what it is,
+and inspect the useful data without navigating through unrelated detail.
+
+- [ ] Audit the main page for unhelpful or duplicated data. Remove it from the
+  default view or move advanced transport, diagnostics, and schema setup into
+  secondary views/pages.
+- [x] Add dark mode with a clear theme control and persisted preference. Check
+  tables, code blocks, empty states, dialogs, and status messages in both themes.
+- [x] Add a compact summary box showing the current capture state and the most
+  useful counts, such as messages, decoded messages, errors, and active filters.
+- [x] Add an explicit auto-scroll toggle. Preserve the current scroll position
+  when auto-scroll is disabled and make the enabled/disabled state obvious.
+- [ ] Make messages easier to understand: use friendly names alongside the
+  fully-qualified protobuf type, distinguish request/response/frame context,
+  surface decode failures clearly, and keep raw wire data secondary.
+- [x] Persist filter settings across refreshes and app restarts. Define which
+  settings are global and which belong to a workspace or capture session.
+- [ ] Verify the 1.5-second refresh behavior. Confirm whether the current
+  implementation rewrites the whole screen; update only changed rows/panels,
+  and preserve selection, scroll position, expanded sections, and input focus.
+- [ ] Add focused UI tests for filtering, theme changes, refresh preservation,
+  selection, and empty/error states.
+
+## 7. Capture and log workflow
+
+- [ ] Add a way to save captured data to a log file. Define the log format,
+  metadata, schema references, raw payload retention, and whether decoded data
+  is stored as a derived view.
+- [ ] Allow users to select individual traffic/messages or a range of lines and
+  save only the selected data to a file.
+- [ ] Add recording mode: for a selected request, save the request and its
+  matching response as a reusable request/response set.
+- [ ] Define how a request/response set is represented by a directory and its
+  contents, including naming, metadata, ordering, and incomplete pairs.
+- [ ] Make pairing behavior explicit for missing responses, duplicate requests,
+  streaming messages, and WebSocket traffic.
+
+## 8. Operating modes
+
+### Real-time decode
+
+- [ ] Support live proxy capture and decode as the default real-time workflow.
+- [ ] Add optional log recording while real-time decoding is active.
+- [ ] Keep capture status, refresh interval, dropped data, and decode errors
+  visible without crowding the message inspector.
+
+### Log decode
+
+- [ ] Add an open-log workflow for one or more log files.
+- [ ] Support file picker and drag-and-drop input.
+- [ ] Define and implement supported archives/containers, including `.zip`,
+  `.dat`, and timezone-aware `.tz` data where applicable.
+- [ ] Show the selected log/set, decode progress, malformed entries, and source
+  file for each message.
+
+### Replay and persistence ingestion
+
+- [ ] Add Replay Mode for previously captured request/response data, with clear
+  control over timing, ordering, and whether traffic is sent upstream.
+- [ ] Ingest persisted capture/log files as a first-class source of Traffic data,
+  preserving raw payloads, decoded data, codec identity, timestamps, and session
+  identifiers.
+- [ ] Allow users to drag and drop one or more protobuf/schema files into the
+  tool, including supported `.zip` and timezone/archive formats. Define whether
+  files are copied into a managed workspace or referenced in place.
+- [ ] Support multiple schema/codec inputs with explicit precedence, conflict
+  reporting, and a visible active codec set.
+
+### Dev server / offline local mode
+
+- [ ] Add a mode for selecting the current offline request/response set.
+- [ ] Implement request-to-response mapping backed by a directory of fixtures.
+- [ ] Support partial offline mode where mapped requests are served locally but
+  authentication/login still uses the real server.
+- [ ] Support response sequences for typical requests, including changing
+  responses over time and mappings to a folder of responses.
+- [ ] Define keep-alive behavior and connection/session lifecycle for offline
+  responses.
+- [ ] Define how JWTs and other authentication state are handled in offline and
+  partial-offline modes.
+- [ ] Support price subscriptions, price responses, and configurable price
+  generators for development scenarios.
+- [ ] Add workflows to edit an existing response map/set and generate a new
+  response map/set from recorded traffic.
+- [ ] Make the active set, mapping result, fallback-to-server behavior, and
+  replay/sequence position visible and auditable.
+
+## 9. Mode and format design decisions
+
+- [ ] Choose a versioned log format that can preserve raw traffic, decoded JSON,
+  schema identity, timestamps, direction, and request/response correlation.
+- [ ] Decide whether log archives are opened in place or extracted into a
+  managed workspace, and how large files are handled safely.
+- [ ] Define the persistence boundary for UI preferences, capture sessions,
+  logs, request/response sets, and offline-server configuration.
+- [ ] Define the refresh/update model before optimizing the UI: full snapshot,
+  incremental events, or a hybrid approach.
+- [ ] Add end-to-end fixtures covering real-time capture, saved logs, replay,
+  partial offline mode, response sequences, and missing/ambiguous mappings.

@@ -12,10 +12,10 @@ reports that recent decoding changes have not fixed this in the running exe.
 
 Traffic Detail mostly shows request/response information without useful message
 context. Payload Preview still shows generic wire fields. Event Timeline's
-purpose relative to Traffic is unclear. WebSocket Messages looks like another
-copy of Traffic with the Proto filter selected, and Frame Detail introduces a
-second payload preview. Frame decoding currently depends on loading a descriptor
-set.
+purpose relative to Traffic is unclear. The combined Traffic table now includes
+WebSocket messages, but the selected-message inspector still contains
+WebSocket-specific controls and duplicate transport context. Frame decoding
+currently depends on loading a descriptor set.
 
 The desired default workflow is: see messages, filter them, recognize their
 types in the table, then select one to inspect decoded field names and contents.
@@ -79,10 +79,22 @@ message decoding (nested rows are flattened in this copied example):
 - [ ] If only generated code or embedded descriptors exist, assess whether they
   can supply a reliable schema. Use explicit mappings when the schema exists
   but the message identity cannot be determined automatically.
+- [ ] Treat a missing user-supplied `.pb` file separately from a missing schema:
+  investigate the platform and URL Generator decoder/encoder implementations as
+  an application-owned codec source, including embedded descriptors, generated
+  message code, ordinal/version maps, and envelope rules.
+- [ ] Define versioned codec packs or adapters so Rust and JavaScript can use the
+  same message identity, typed field model, decode behavior, and encode behavior.
+  Record the codec/build version used for every decoded or encoded message.
+- [ ] Support protobuf encoding from edited decoded data when a compatible
+  platform codec or descriptor is available. For unknown message types, allow
+  raw replay or wire inspection but do not claim that arbitrary encoding is safe.
 - [ ] If schema information is unavailable, keep a useful wire inspection and
-  state the missing information. Raw protobuf bytes alone cannot reliably
-  recover original field names, exact types, or message identities. Do not
-  present guessed names or wire interpretations as confirmed decoding.
+  state whether the missing source is a user descriptor, bundled platform codec,
+  message mapping, or incompatible codec version. Raw protobuf bytes alone
+  cannot reliably recover original field names, exact types, or message
+  identities. Do not present guessed names or wire interpretations as confirmed
+  decoding.
 - [ ] Show a concrete reason when decoding fails, such as missing schema,
   unmatched envelope ordinal/version, ambiguous mapping, or malformed payload,
   and give the user an actionable next step.
@@ -94,6 +106,13 @@ message decoding (nested rows are flattened in this copied example):
   when identity cannot be established.
 - [ ] On selection, show named fields and values with nested/repeated structures
   intact. Make raw bytes and wire inspection secondary views of that message.
+- [ ] Render protobuf request and response content independently: show the
+  request message name and parameters, then the response message name and
+  payload. For WebSocket traffic, show one message with direction rather than
+  implying an HTTP-style request/response pair.
+- [ ] Provide a single payload view toggle between formatted JSON and compact
+  JSON string. Both views must come from the same typed decoded message, not
+  from parsing display-preview strings.
 - [ ] Include useful context: direction, host/path, connection, timestamp, and
   envelope type/version where available. Do not imply request/response pairing
   for WebSocket messages unless there is evidence supporting that relationship.
@@ -117,6 +136,43 @@ message decoding (nested rows are flattened in this copied example):
   table on the default page. Capture diagnostics are collapsed by default.
 - [x] Keep schema setup and advanced diagnostics accessible without expanding
   them into the main message browsing workflow.
+- [ ] Decide whether Traffic Detail adds information beyond the main Traffic
+  table and selected protobuf payload. Hide, collapse, or redesign duplicate
+  content so the default view stays focused on message data.
+- [ ] Audit the WebSocket inspector controls: define the purpose of Decode Frame,
+  decoded export path, Save Mapping, and Export Decoded JSON. Move genuinely
+  advanced transport/schema actions behind an advanced section or remove
+  controls that duplicate the main workflow.
+- [ ] Add a Sessions panel listing session IDs found in the current data set.
+  Selecting a session must jump to the response/message that introduced or
+  included that session ID, with clear behavior for multiple matches.
+- [ ] Add traffic filters for unknown/undecoded messages, dead calls, and errors.
+  Provide an explicit Errors-only toggle and define how pending, missing,
+  cancelled, and failed calls are classified.
+- [ ] Add a dual request/response view with requests on the left and responses
+  on the right, aligned by correlation so the matching response sits beside its
+  request. Keep WebSocket messages as a direction-aware stream when no pairing
+  evidence exists.
+- [ ] Add text search over message names, paths, session IDs, decoded keys and
+  values, and useful transport metadata. Selecting a result must select the
+  underlying Traffic row.
+- [x] Clarify the Resource `Proto` filter versus Payload `protobuf` filter. The
+  UI now labels them as `Proto resource` and `Payload type: Protobuf`; revisit
+  the underlying predicates if real captures show they are still equivalent.
+- [ ] Fix Capture diagnostics jumping to the latest message during refresh. Keep
+  the user's diagnostics scroll position unless they explicitly request latest.
+- [ ] Stop traffic-window auto-follow when a message is selected, while keeping
+  the explicit auto-scroll toggle available to resume following new messages.
+- [ ] Match the `wfe-central:tools:Packetlog viewer` filtering model for Connect
+  and mobile-server calls, highlight Connect API traffic, and then add clearer
+  message identity, decoded JSON, and anomaly context than the existing tool.
+- [x] Rename user-facing `Findings` terminology to `Anomalies` consistently in
+  filters, columns, summaries, and detail panels.
+- [ ] Add stable, accessible session colors in the Traffic table and inspector,
+  with a legend or other way to avoid relying on color alone.
+- [ ] Reduce the Decode section to a compact success/unknown/error state in the
+  default view. Put detailed status, mapping evidence, and raw wire fields in a
+  collapsed advanced section.
 
 Implementation note: the Traffic page now uses one combined HTTP/WebSocket
 message table and one selected-message inspector. Event Timeline remains an
@@ -198,6 +254,19 @@ and inspect the useful data without navigating through unrelated detail.
   `.dat`, and timezone-aware `.tz` data where applicable.
 - [ ] Show the selected log/set, decode progress, malformed entries, and source
   file for each message.
+
+### Replay and persistence ingestion
+
+- [ ] Add Replay Mode for previously captured request/response data, with clear
+  control over timing, ordering, and whether traffic is sent upstream.
+- [ ] Ingest persisted capture/log files as a first-class source of Traffic data,
+  preserving raw payloads, decoded data, codec identity, timestamps, and session
+  identifiers.
+- [ ] Allow users to drag and drop one or more protobuf/schema files into the
+  tool, including supported `.zip` and timezone/archive formats. Define whether
+  files are copied into a managed workspace or referenced in place.
+- [ ] Support multiple schema/codec inputs with explicit precedence, conflict
+  reporting, and a visible active codec set.
 
 ### Dev server / offline local mode
 

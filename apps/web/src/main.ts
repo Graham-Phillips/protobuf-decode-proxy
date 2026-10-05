@@ -205,7 +205,7 @@ app.innerHTML = `
             <input id="traffic-search" type="search" placeholder="Host, path, method, status">
           </label>
           <div class="field">
-            <span>Resource</span>
+            <span>Resource kind</span>
             <div class="resource-filter" role="group" aria-label="Resource filter">
               <button class="resource-filter-button active" type="button" data-resource-filter="all" aria-pressed="true">All</button>
               <button class="resource-filter-button" type="button" data-resource-filter="fetch" aria-pressed="false">Fetch/XHR</button>
@@ -216,15 +216,15 @@ app.innerHTML = `
               <button class="resource-filter-button" type="button" data-resource-filter="font" aria-pressed="false">Font</button>
               <button class="resource-filter-button" type="button" data-resource-filter="media" aria-pressed="false">Media</button>
               <button class="resource-filter-button" type="button" data-resource-filter="ws" aria-pressed="false">WS</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="protobuf" aria-pressed="false">Proto</button>
-              <button class="resource-filter-button" type="button" data-resource-filter="json" aria-pressed="false">JSON</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="protobuf" aria-pressed="false">Proto resource</button>
+              <button class="resource-filter-button" type="button" data-resource-filter="json" aria-pressed="false">JSON resource</button>
               <button class="resource-filter-button" type="button" data-resource-filter="other" aria-pressed="false">Other</button>
             </div>
           </div>
           <label class="field">
-            <span>Payload</span>
+            <span>Payload type</span>
             <select id="protocol-filter">
-              <option value="all">All types</option>
+              <option value="all">All payload types</option>
               <option value="protobuf">Protobuf</option>
               <option value="grpc">gRPC</option>
               <option value="json">JSON</option>
@@ -234,7 +234,7 @@ app.innerHTML = `
           </label>
           <label class="check-row">
             <input id="anomaly-filter" type="checkbox">
-            <span>Findings only</span>
+            <span>Anomalies only</span>
           </label>
           <button id="analyse-selection" class="primary-button" type="button">Analyse Visible</button>
         </section>
@@ -263,7 +263,7 @@ app.innerHTML = `
         <section class="traffic-summary-strip" aria-label="Capture summary">
           <div class="summary-stat"><span>Messages</span><strong id="summary-messages">0</strong></div>
           <div class="summary-stat"><span>Decoded</span><strong id="summary-decoded">0</strong></div>
-          <div class="summary-stat"><span>Findings</span><strong id="summary-findings">0</strong></div>
+          <div class="summary-stat"><span>Anomalies</span><strong id="summary-findings">0</strong></div>
           <div class="summary-stat"><span>WebSockets</span><strong id="summary-websockets">0</strong></div>
           <div class="summary-stat summary-stat-wide"><span>Active filters</span><strong id="summary-filters">All traffic</strong></div>
         </section>
@@ -282,7 +282,7 @@ app.innerHTML = `
                   <th><button class="sort-header" type="button" data-sort-key="method">Method</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="host">Host</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="decode">Decode</button></th>
-                  <th><button class="sort-header" type="button" data-sort-key="findings">Findings</button></th>
+                  <th><button class="sort-header" type="button" data-sort-key="findings">Anomalies</button></th>
                 </tr>
               </thead>
               <tbody id="traffic-messages">
@@ -318,7 +318,7 @@ app.innerHTML = `
             </div>
           </div>
           <div id="exchange-detail" class="detail-content">
-            Select a traffic row to inspect request, response, payload preview, and findings.
+            Select a traffic row to inspect request, response, payload preview, and anomalies.
           </div>
           <p id="selected-copy-status" class="status-message" role="status" aria-live="polite"></p>
         </section>
@@ -803,7 +803,7 @@ function renderSelectedWebSocketPreview() {
     selectedExchangeKind.textContent = 'No selection'
     copySelectedTrafficButton.disabled = true
     selectedWebSocketDecode = null
-    exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and findings.'
+    exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and anomalies.'
     return
   }
 
@@ -874,8 +874,8 @@ function renderTrafficMessages() {
   summaryFindings.textContent = String(findings)
   summaryWebSockets.textContent = String(latestWebSocketPreviews.length)
   summaryFilters.textContent = activeResourceFilters.size === 0
-    ? `${protocolFilter.value === 'all' ? 'All types' : protocolFilter.value}${anomalyFilter.checked ? ', findings' : ''}`
-    : `${resourceFilterSummary()}${anomalyFilter.checked ? ', findings' : ''}`
+    ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${anomalyFilter.checked ? ', anomalies' : ''}`
+    : `${resourceFilterSummary()}${anomalyFilter.checked ? ', anomalies' : ''}`
   analyseSelectionButton.disabled = visibleRows.length === 0
 
   if (visibleWindow.length === 0) {
@@ -923,7 +923,7 @@ function renderSelectedTraffic() {
     selectedWebSocketDecode = null
     selectedExchangeKind.textContent = 'No selection'
     copySelectedTrafficButton.disabled = true
-    exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and findings.'
+    exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and anomalies.'
     selectedInspectorSignature = 'none'
     return
   }
@@ -993,7 +993,7 @@ function renderSelectedExchange() {
   if (!exchange) {
     selectedExchangeKind.textContent = 'No selection'
     copySelectedTrafficButton.disabled = true
-    exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and findings.'
+    exchangeDetail.textContent = 'Select a traffic row to inspect request, response, payload preview, and anomalies.'
     return
   }
 
@@ -1025,7 +1025,7 @@ function renderSelectedExchange() {
           <div><dt>Server time</dt><dd>${escapeHtml(exchange.server_time ?? '-')}</dd></div>
           <div><dt>Content type</dt><dd>${escapeHtml(exchange.payload_hint.response_content_type ?? '-')}</dd></div>
           <div><dt>Decode</dt><dd>${escapeHtml(exchange.payload_decode.status)}</dd></div>
-          <div><dt>Findings</dt><dd>${anomalyLabels(exchange.anomalies)}</dd></div>
+          <div><dt>Anomalies</dt><dd>${anomalyLabels(exchange.anomalies)}</dd></div>
         </dl>
       </section>
     </div>
@@ -2651,7 +2651,7 @@ clearCaptureButton.addEventListener('click', async () => {
 analyseSelectionButton.addEventListener('click', () => {
   const visible = filteredTrafficRows()
   const anomalyCount = visible.filter((row) => trafficRowAnomalies(row).length > 0).length
-  trafficSummary.textContent = `${visible.length} visible traffic rows, ${anomalyCount} with findings, ${resourceFilterSummary()}. ${sortDescription()}.`
+  trafficSummary.textContent = `${visible.length} visible traffic rows, ${anomalyCount} with anomalies, ${resourceFilterSummary()}. ${sortDescription()}.`
 })
 
 exchangeTableWrap.addEventListener('scroll', () => {

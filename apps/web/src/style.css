@@ -161,6 +161,7 @@ h3 {
 
 .primary-nav,
 .view-switch,
+.capture-mode-switch,
 .resource-filter,
 .workbench-actions,
 .top-actions,
@@ -181,12 +182,14 @@ h3 {
 
 .nav-button,
 .view-button,
+.mode-button,
 .resource-filter-button {
   background: transparent;
 }
 
 .nav-button.active,
 .view-button.active,
+.mode-button.active,
 .resource-filter-button.active,
 .primary-button {
   border-color: var(--accent);
@@ -342,6 +345,18 @@ h3 {
   margin: 4px 0 0;
   color: var(--muted);
   line-height: 1.45;
+}
+
+.capture-mode-switch {
+  align-items: center;
+  gap: 4px;
+}
+
+.mode-button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .toolbar-toggle {

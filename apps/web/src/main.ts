@@ -72,6 +72,7 @@ type WebSocketMessagePreview = {
   body_len: number | null
   payload_hint: PayloadHint
   payload_decode: PayloadDecode
+  source: string | null
 }
 
 type PayloadHint = {
@@ -143,6 +144,11 @@ type PacketLogImportReport = {
   errors: string[]
 }
 
+type PacketLogImportResult = {
+  report: PacketLogImportReport
+  summary: ProxyEventSummary
+}
+
 type PacketLogSourceReport = {
   source: string
   format: string
@@ -174,6 +180,7 @@ type WebSocketProtoMapping = {
 
 type TrafficView = 'table' | 'timeline' | 'heatmap'
 type Workspace = 'traffic' | 'schemas' | 'runtime'
+type CaptureMode = 'live' | 'log'
 type SortKey = 'started_at' | 'name' | 'method' | 'host' | 'status' | 'type' | 'initiator' | 'size' | 'time' | 'decode' | 'anomalies'
 type SortDirection = 'asc' | 'desc'
 type ResourceFilter = 'all' | 'fetch' | 'document' | 'js' | 'css' | 'image' | 'font' | 'media' | 'ws' | 'protobuf' | 'json' | 'other'
@@ -268,14 +275,14 @@ app.innerHTML = `
         </section>
         <section class="tool-panel">
           <div class="panel-heading">
-            <h2>Import packet logs</h2>
+            <h2>Read packet logs</h2>
             <span class="small-value">ZIP / GZ / DAT</span>
           </div>
           <label class="field">
             <span>File paths</span>
             <textarea id="packet-log-paths" rows="3" placeholder="One path per line"></textarea>
           </label>
-          <button id="inspect-packet-logs" class="primary-button" type="button">Inspect sources</button>
+          <button id="inspect-packet-logs" class="primary-button" type="button">Open in Traffic</button>
           <p id="packet-log-status" class="status-message" role="status" aria-live="polite">No packet-log import yet.</p>
           <div id="packet-log-results" class="packet-log-results"></div>
         </section>
@@ -288,6 +295,11 @@ app.innerHTML = `
             <p id="traffic-summary">Waiting for traffic. Oldest exchanges appear first.</p>
           </div>
           <div class="workbench-actions">
+            <div class="capture-mode-switch" role="group" aria-label="Traffic source">
+              <span class="small-value">Source</span>
+              <button class="mode-button active" type="button" data-capture-mode="live" aria-pressed="true">Live proxy</button>
+              <button class="mode-button" type="button" data-capture-mode="log" aria-pressed="false">Read log</button>
+            </div>
             <label class="check-row toolbar-toggle">
               <input id="auto-scroll-toggle" type="checkbox" checked>
               <span>Auto-scroll</span>
@@ -650,6 +662,7 @@ const packetLogPaths = document.querySelector<HTMLTextAreaElement>('#packet-log-
 const inspectPacketLogsButton = document.querySelector<HTMLButtonElement>('#inspect-packet-logs')!
 const packetLogStatus = document.querySelector<HTMLElement>('#packet-log-status')!
 const packetLogResults = document.querySelector<HTMLElement>('#packet-log-results')!
+const captureModeButtons = document.querySelectorAll<HTMLButtonElement>('[data-capture-mode]')
 const trafficSummary = document.querySelector<HTMLElement>('#traffic-summary')!
 const summaryMessages = document.querySelector<HTMLElement>('#summary-messages')!
 const summaryDecoded = document.querySelector<HTMLElement>('#summary-decoded')!
@@ -676,6 +689,9 @@ let proxyRunning = false
 let refreshInFlight = false
 let latestExchanges: HttpExchange[] = []
 let latestWebSocketPreviews: WebSocketMessagePreview[] = []
+let latestLiveSummary: ProxyEventSummary | null = null
+let latestImportedSummary: ProxyEventSummary | null = null
+let captureMode: CaptureMode = 'live'
 let latestSchemaStatus: ProtoSchemaStatus | null = null
 let latestSchemaBundles: ProtoSchemaStatus[] = []
 let latestWebSocketMappings: WebSocketProtoMapping[] = []
@@ -755,6 +771,49 @@ autoScrollEnabled = savedUiPreferences.autoScroll !== false
 autoScrollToggle.checked = autoScrollEnabled
 updateResourceFilterButtons()
 
+function emptyTrafficSummary(): ProxyEventSummary {
+  return {
+    total: 0,
+    http_requests: 0,
+    http_responses: 0,
+    websocket_messages: 0,
+    websocket_active_connections: 0,
+    websocket_opened_connections: 0,
+    websocket_errors: 0,
+    http_exchanges: [],
+    websocket_message_previews: [],
+    events: [],
+  }
+}
+
+function renderCaptureMode() {
+  captureModeButtons.forEach((button) => {
+    const active = button.dataset.captureMode === captureMode
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  })
+
+  packetLogStatus.textContent = captureMode === 'log'
+    ? latestImportedSummary ? 'Reading imported packet-log traffic.' : 'Read log mode is active. Open a packet log to populate Traffic.'
+    : 'Live proxy traffic is active.'
+}
+
+async function setCaptureMode(mode: CaptureMode) {
+  captureMode = mode
+  renderCaptureMode()
+
+  if (captureMode === 'log') {
+    renderEvents(latestImportedSummary ?? emptyTrafficSummary())
+    return
+  }
+
+  if (latestLiveSummary) {
+    renderEvents(latestLiveSummary)
+  } else {
+    await refresh()
+  }
+}
+
 async function refresh() {
   if (refreshInFlight) {
     return
@@ -801,19 +860,13 @@ async function refreshProxy() {
   }
   renderBrowserSetup(status)
 
+  if (captureMode === 'log') {
+    renderEvents(latestImportedSummary ?? emptyTrafficSummary())
+    return
+  }
+
   if (!status.running) {
-    renderEvents({
-      total: 0,
-      http_requests: 0,
-      http_responses: 0,
-      websocket_messages: 0,
-      websocket_active_connections: 0,
-      websocket_opened_connections: 0,
-      websocket_errors: 0,
-      http_exchanges: [],
-      websocket_message_previews: [],
-      events: [],
-    })
+    renderEvents(emptyTrafficSummary())
     return
   }
 
@@ -822,6 +875,9 @@ async function refreshProxy() {
 }
 
 function renderEvents(summary: ProxyEventSummary) {
+  if (captureMode === 'live') {
+    latestLiveSummary = summary
+  }
   latestExchanges = summary.http_exchanges
   latestWebSocketPreviews = summary.websocket_message_previews
   const shouldAutoScroll = autoScrollEnabled && autoScrollExchanges
@@ -833,9 +889,11 @@ function renderEvents(summary: ProxyEventSummary) {
   websocketOpened.textContent = String(summary.websocket_opened_connections)
   websocketErrors.textContent = String(summary.websocket_errors)
   websocketState.dataset.state = summary.websocket_active_connections > 0 ? 'active' : 'idle'
-  websocketState.lastElementChild!.textContent = summary.websocket_active_connections > 0
-    ? `${summary.websocket_active_connections} WebSocket${summary.websocket_active_connections === 1 ? '' : 's'}`
-    : 'No WebSockets'
+  websocketState.lastElementChild!.textContent = captureMode === 'log'
+    ? 'Imported log'
+    : summary.websocket_active_connections > 0
+      ? `${summary.websocket_active_connections} WebSocket${summary.websocket_active_connections === 1 ? '' : 's'}`
+      : 'No WebSockets'
   renderTrafficMessages()
   renderSelectedTraffic()
   if (activeView === 'timeline') {
@@ -882,6 +940,7 @@ function renderSelectedWebSocketPreview() {
   selectedExchangeKind.textContent = preview.payload_hint.likely_protocol
   copySelectedTrafficButton.disabled = false
   const activeDecode = selectedWebSocketDecode ?? preview.payload_decode
+  const canDecodeFrame = latestSchemaStatus !== null && preview.source === null
   renderProtoMessageOptions(messageNamesForPreview(preview))
   exchangeDetail.innerHTML = `
     <div class="schema-decode-controls">
@@ -893,22 +952,22 @@ function renderSelectedWebSocketPreview() {
           list="proto-message-name-options"
           placeholder="package.MessageName"
           value="${escapeHtml(selectedWebSocketDecodeMessage)}"
-          ${latestSchemaStatus ? '' : 'disabled'}
+          ${canDecodeFrame ? '' : 'disabled'}
         >
       </label>
-      <button id="decode-websocket-frame" class="primary-button" type="button" ${latestSchemaStatus ? '' : 'disabled'}>Decode Frame</button>
-      <button id="save-websocket-mapping-from-frame" type="button" ${latestSchemaStatus ? '' : 'disabled'}>Save Mapping</button>
+      <button id="decode-websocket-frame" class="primary-button" type="button" ${canDecodeFrame ? '' : 'disabled'}>Decode Frame</button>
+      <button id="save-websocket-mapping-from-frame" type="button" ${canDecodeFrame ? '' : 'disabled'}>Save Mapping</button>
       <label class="field">
         <span>Decoded export path</span>
         <input
           id="decoded-websocket-export-path"
           type="text"
           placeholder="C:\\Temp\\protobuf-decoder-decoded-websocket-message.json"
-          ${latestSchemaStatus ? '' : 'disabled'}
+          ${canDecodeFrame ? '' : 'disabled'}
         >
       </label>
-      <button id="export-decoded-websocket-frame" type="button" ${latestSchemaStatus ? '' : 'disabled'}>Export Decoded JSON</button>
-      <p id="websocket-schema-decode-status" class="status-message">${latestSchemaStatus ? 'Choose a loaded message type for this frame.' : 'Load a descriptor set in Schemas before schema-aware frame decoding.'}</p>
+      <button id="export-decoded-websocket-frame" type="button" ${canDecodeFrame ? '' : 'disabled'}>Export Decoded JSON</button>
+      <p id="websocket-schema-decode-status" class="status-message">${preview.source ? 'Imported packet-log payload is decoded from the loaded descriptor set.' : latestSchemaStatus ? 'Choose a loaded message type for this frame.' : 'Load a descriptor set in Schemas before schema-aware frame decoding.'}</p>
     </div>
     <dl class="detail-grid">
       <div><dt>Direction</dt><dd>${escapeHtml(directionLabel(preview.direction))}</dd></div>
@@ -918,6 +977,7 @@ function renderSelectedWebSocketPreview() {
       <div><dt>Type</dt><dd>${escapeHtml(preview.payload_hint.likely_protocol)}</dd></div>
       <div><dt>Decode</dt><dd>${escapeHtml(activeDecode.status)}</dd></div>
       <div><dt>Connection</dt><dd>${escapeHtml(preview.connection_id)}</dd></div>
+      ${preview.source ? `<div><dt>Source</dt><dd title="${escapeHtml(preview.source)}">${escapeHtml(preview.source)}</dd></div>` : ''}
       <div><dt>Captured</dt><dd>${formatTime(preview.timestamp_unix_ms)}</dd></div>
     </dl>
   `
@@ -970,8 +1030,9 @@ function renderTrafficMessages() {
   trafficMessages.innerHTML = visibleWindow
     .map((row) => {
       const pair = trafficPairForRow(row)
+      const source = row.kind === 'websocket' ? row.preview.source : null
       return `
-      <tr class="${trafficRowKey(row) === selectedTrafficKey ? 'selected' : ''}${pair ? ` paired-row pair-tone-${pair.tone}` : ''}" data-traffic-key="${escapeHtml(trafficRowKey(row))}" title="${escapeHtml(pair ? `${trafficRowHost(row)}; paired with message #${pair.messageId}` : trafficRowHost(row))}">
+      <tr class="${trafficRowKey(row) === selectedTrafficKey ? 'selected' : ''}${pair ? ` paired-row pair-tone-${pair.tone}` : ''}" data-traffic-key="${escapeHtml(trafficRowKey(row))}" title="${escapeHtml([trafficRowHost(row), source, pair ? `paired with message #${pair.messageId}` : null].filter(Boolean).join('; '))}">
         <td>${escapeHtml(trafficRowName(row))}${pair ? `<span class="pair-badge" title="Matched by request message number">Pair #${escapeHtml(String(pair.messageId))}</span>` : ''}</td>
         <td>${trafficRowStatus(row)}</td>
         <td>${payloadLabel(trafficRowPayloadHint(row), row.kind === 'http' ? row.part : null)}</td>
@@ -2307,7 +2368,7 @@ function schemaBundleMatchesPreview(bundle: ProtoSchemaStatus, preview: WebSocke
 function renderPacketLogImportReport(report: PacketLogImportReport) {
   const sourceCount = report.sources.length
   const recordCount = report.sources.reduce((total, source) => total + source.record_count, 0)
-  packetLogStatus.textContent = `Inspected ${sourceCount} source${sourceCount === 1 ? '' : 's'} and ${recordCount.toLocaleString()} record${recordCount === 1 ? '' : 's'}. Cache: ${report.cache_directory}`
+  packetLogStatus.textContent = `Loaded ${sourceCount} source${sourceCount === 1 ? '' : 's'} and ${recordCount.toLocaleString()} record${recordCount === 1 ? '' : 's'} into Traffic. Cache: ${report.cache_directory}`
   packetLogResults.innerHTML = [
     ...report.sources.slice(0, 12).map((source) => `
       <div class="packet-log-result">
@@ -2729,6 +2790,22 @@ toggleProxyButton.addEventListener('click', async () => {
   await refresh()
 })
 
+captureModeButtons.forEach((button) => {
+  button.addEventListener('click', async () => {
+    const mode = button.dataset.captureMode as CaptureMode | undefined
+    if (!mode || mode === captureMode) {
+      return
+    }
+
+    button.disabled = true
+    try {
+      await setCaptureMode(mode)
+    } finally {
+      button.disabled = false
+    }
+  })
+})
+
 copyCommandButtons.forEach((button) => {
   button.addEventListener('click', async () => {
     const targetId = button.dataset.copyTarget
@@ -2780,18 +2857,22 @@ inspectPacketLogsButton.addEventListener('click', async () => {
   }
 
   inspectPacketLogsButton.disabled = true
-  inspectPacketLogsButton.textContent = 'Inspecting...'
-  packetLogStatus.textContent = 'Inspecting sources and materializing gzip logs...'
+  inspectPacketLogsButton.textContent = 'Opening...'
+  packetLogStatus.textContent = 'Opening sources, materializing gzip logs, and decoding packet records...'
   packetLogResults.textContent = ''
 
   try {
-    const report = await invoke<PacketLogImportReport>('inspect_packet_log_sources', { paths })
-    renderPacketLogImportReport(report)
+    const imported = await invoke<PacketLogImportResult>('import_packet_log_sources', { paths })
+    latestImportedSummary = imported.summary
+    captureMode = 'log'
+    renderCaptureMode()
+    renderPacketLogImportReport(imported.report)
+    renderEvents(imported.summary)
   } catch (error) {
     packetLogStatus.textContent = `Packet-log import failed: ${String(error)}`
   } finally {
     inspectPacketLogsButton.disabled = false
-    inspectPacketLogsButton.textContent = 'Inspect sources'
+    inspectPacketLogsButton.textContent = 'Open in Traffic'
   }
 })
 
@@ -3012,7 +3093,9 @@ exchangeTimeline.addEventListener('click', (event) => {
     return
   }
 
-  selectedTrafficKey = `http:${row.dataset.exchangeId ?? ''}`
+  const exchangeId = row.dataset.exchangeId ?? ''
+  const exchange = latestExchanges.find((candidate) => candidate.id === exchangeId)
+  selectedTrafficKey = `http:${exchangeId}:${exchange?.response_payload_decode ? 'response' : 'request'}`
   selectedCopyStatus.textContent = ''
   autoScrollExchanges = false
   trafficDetail.open = true
@@ -3025,7 +3108,13 @@ clearCaptureButton.addEventListener('click', async () => {
   clearCaptureButton.disabled = true
 
   try {
-    await invoke('clear_proxy_events')
+    if (captureMode === 'log') {
+      latestImportedSummary = null
+      renderCaptureMode()
+      renderEvents(emptyTrafficSummary())
+    } else {
+      await invoke('clear_proxy_events')
+    }
     selectedExchangeId = null
     selectedWebSocketPreviewId = null
     selectedTrafficKey = null
@@ -3093,6 +3182,7 @@ sortHeaderButtons.forEach((button) => {
   })
 })
 
+renderCaptureMode()
 void refresh()
 window.setInterval(() => {
   void refresh()

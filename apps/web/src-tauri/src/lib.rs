@@ -85,6 +85,13 @@ struct WebSocketMessagePreview {
     body_len: Option<u64>,
     payload_hint: PayloadHint,
     payload_decode: PayloadDecode,
+    source: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PacketLogImportResult {
+    report: packet_log::PacketLogImportReport,
+    summary: ProxyEventSummary,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -502,6 +509,104 @@ async fn proxy_events(state: tauri::State<'_, ProxyState>) -> Result<ProxyEventS
         websocket_message_previews,
         events,
     })
+}
+
+fn normalize_packet_log_payload(payload: &[u8]) -> &[u8] {
+    // Packet-log records carry a one-byte record marker before iPhonePacketProto.
+    if payload.first() == Some(&0x0e) && payload.get(1) == Some(&0x0a) {
+        &payload[1..]
+    } else {
+        payload
+    }
+}
+
+fn packet_log_direction(payload: &[u8], schemas: &[ProtoSchemaBundle]) -> Direction {
+    let Some(descriptor) = schemas
+        .iter()
+        .find_map(|schema| schema.pool.get_message_by_name(APPLICATION_PACKET_MESSAGE))
+    else {
+        return Direction::Response;
+    };
+    let Ok(packet) = DynamicMessage::decode(descriptor, payload) else {
+        return Direction::Response;
+    };
+    let Some(items_value) = packet.get_field_by_name("messageList") else {
+        return Direction::Response;
+    };
+    let Value::List(items) = items_value.as_ref() else {
+        return Direction::Response;
+    };
+
+    let mut has_message_id = false;
+    let mut has_request_message_id = false;
+    for item in items {
+        let Value::Message(item) = item else {
+            continue;
+        };
+        has_message_id |= item.get_field_by_name("messageId").is_some();
+        has_request_message_id |= item.get_field_by_name("requestMessageId").is_some();
+    }
+
+    if has_request_message_id {
+        Direction::Response
+    } else if has_message_id {
+        Direction::Request
+    } else {
+        Direction::Response
+    }
+}
+
+fn build_packet_log_summary(
+    records: &[packet_log::PacketLogRecord],
+    schemas: &[ProtoSchemaBundle],
+) -> ProxyEventSummary {
+    let events = records
+        .iter()
+        .map(|record| {
+            let payload = normalize_packet_log_payload(&record.payload).to_vec();
+            let connection_id = format!("log-session:{}", record.source);
+            ProxyEvent {
+                id: format!("log:{}:{}", record.source, record.record_index),
+                request_id: connection_id.clone(),
+                connection_id: Some(connection_id),
+                timestamp_unix_ms: u128::from(record.timestamp_unix_ms),
+                protocol: Protocol::WebSocket,
+                direction: packet_log_direction(&payload, schemas),
+                method: None,
+                scheme: Some("log".to_owned()),
+                authority: Some("Imported packet log".to_owned()),
+                path: Some(record.source.clone()),
+                status: None,
+                headers: BTreeMap::new(),
+                body_len_hint: Some(payload.len() as u64),
+                body_capture: Some(BodyCapture {
+                    capture_limit: payload.len(),
+                    bytes: payload,
+                    truncated: false,
+                }),
+                websocket_event_kind: Some(WebSocketEventKind::Message),
+                websocket_message_kind: Some(WebSocketMessageKind::Binary),
+                websocket_error: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut websocket_message_previews = build_websocket_message_previews(&events, schemas, &[]);
+    for (preview, record) in websocket_message_previews.iter_mut().zip(records) {
+        preview.source = Some(record.source.clone());
+    }
+
+    ProxyEventSummary {
+        total: events.len(),
+        http_requests: 0,
+        http_responses: 0,
+        websocket_messages: websocket_message_previews.len(),
+        websocket_active_connections: 0,
+        websocket_opened_connections: 0,
+        websocket_errors: 0,
+        http_exchanges: Vec::new(),
+        websocket_message_previews,
+        events,
+    }
 }
 
 #[tauri::command]
@@ -1324,6 +1429,7 @@ fn build_websocket_message_previews(
                 body_len: event.body_len_hint,
                 payload_hint,
                 payload_decode,
+                source: None,
             }
         })
         .collect()
@@ -2934,6 +3040,25 @@ fn inspect_packet_log_sources(
     packet_log::inspect_sources(&app, paths)
 }
 
+#[tauri::command]
+fn import_packet_log_sources(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ProxyState>,
+    paths: Vec<String>,
+) -> Result<PacketLogImportResult, String> {
+    let imported = packet_log::import_sources(&app, paths)?;
+    let schemas = state
+        .proto_schemas
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let summary = build_packet_log_summary(&imported.records, &schemas);
+
+    Ok(PacketLogImportResult {
+        report: imported.report,
+        summary,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3001,6 +3126,7 @@ pub fn run() {
             export_ca_cert,
             trust_ca_cert_for_current_user,
             inspect_packet_log_sources,
+            import_packet_log_sources,
             stop_proxy
         ])
         .run(tauri::generate_context!())

@@ -23,6 +23,19 @@ pub struct PacketLogImportReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct PacketLogRecord {
+    pub source: String,
+    pub record_index: u64,
+    pub timestamp_unix_ms: u64,
+    pub payload: Vec<u8>,
+}
+
+pub struct PacketLogImport {
+    pub report: PacketLogImportReport,
+    pub records: Vec<PacketLogRecord>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct PacketLogSourceReport {
     pub source: String,
@@ -69,6 +82,21 @@ pub fn inspect_sources(
     app: &AppHandle,
     paths: Vec<String>,
 ) -> Result<PacketLogImportReport, String> {
+    Ok(process_sources(app, paths, None)?.report)
+}
+
+pub fn import_sources(app: &AppHandle, paths: Vec<String>) -> Result<PacketLogImport, String> {
+    let mut records = Vec::new();
+    let mut imported = process_sources(app, paths, Some(&mut records))?;
+    imported.records = records;
+    Ok(imported)
+}
+
+fn process_sources(
+    app: &AppHandle,
+    paths: Vec<String>,
+    mut record_sink: Option<&mut Vec<PacketLogRecord>>,
+) -> Result<PacketLogImport, String> {
     let cache_directory = cache_directory(app)?;
     fs::create_dir_all(&cache_directory)
         .map_err(|error| format!("failed to create packet-log cache: {error}"))?;
@@ -83,7 +111,10 @@ pub fn inspect_sources(
         report
             .errors
             .push("no packet-log sources were selected".to_owned());
-        return Ok(report);
+        return Ok(PacketLogImport {
+            report,
+            records: Vec::new(),
+        });
     }
 
     for path in paths {
@@ -96,18 +127,27 @@ pub fn inspect_sources(
             continue;
         }
 
-        if let Err(error) = inspect_path(&cache_directory, &path, &mut report) {
+        if let Err(error) = inspect_path(
+            &cache_directory,
+            &path,
+            &mut report,
+            record_sink.as_mut().map(|sink| &mut **sink),
+        ) {
             report.errors.push(format!("{}: {error}", path.display()));
         }
     }
 
-    Ok(report)
+    Ok(PacketLogImport {
+        report,
+        records: Vec::new(),
+    })
 }
 
 fn inspect_path(
     cache_directory: &Path,
     path: &Path,
     report: &mut PacketLogImportReport,
+    record_sink: Option<&mut Vec<PacketLogRecord>>,
 ) -> Result<(), String> {
     let format = detect_file_format(path)?;
     match format {
@@ -117,7 +157,7 @@ fn inspect_path(
                 path.to_string_lossy().into_owned(),
                 SourceFormat::Dat,
                 None,
-                inspect_records(file),
+                inspect_records_with_sink(file, &path.to_string_lossy(), record_sink),
             ));
         }
         SourceFormat::Gzip => {
@@ -128,7 +168,7 @@ fn inspect_path(
                     path.to_string_lossy().into_owned(),
                     SourceFormat::Dat,
                     None,
-                    inspect_records(file),
+                    inspect_records_with_sink(file, &path.to_string_lossy(), record_sink),
                 ));
                 return Ok(());
             }
@@ -141,7 +181,7 @@ fn inspect_path(
                 path.to_string_lossy().into_owned(),
                 SourceFormat::Gzip,
                 Some(cache_path.to_string_lossy().into_owned()),
-                inspect_records(file),
+                inspect_records_with_sink(file, &path.to_string_lossy(), record_sink),
             ));
         }
         SourceFormat::Zip => {
@@ -152,6 +192,7 @@ fn inspect_path(
                 &path.to_string_lossy(),
                 0,
                 report,
+                record_sink,
             )?;
         }
         SourceFormat::Unknown => {
@@ -168,6 +209,7 @@ fn inspect_zip<R: Read + Seek>(
     source_prefix: &str,
     depth: usize,
     report: &mut PacketLogImportReport,
+    mut record_sink: Option<&mut Vec<PacketLogRecord>>,
 ) -> Result<(), String> {
     let entry_names = (0..archive.len())
         .filter_map(|index| {
@@ -201,10 +243,14 @@ fn inspect_zip<R: Read + Seek>(
             SourceFormat::Dat => {
                 let reader = Cursor::new(prefix[..prefix_len].to_vec()).chain(entry);
                 report.sources.push(source_report(
-                    source,
+                    source.clone(),
                     SourceFormat::Dat,
                     None,
-                    inspect_records(reader),
+                    inspect_records_with_sink(
+                        reader,
+                        &source,
+                        record_sink.as_mut().map(|sink| &mut **sink),
+                    ),
                 ));
             }
             SourceFormat::Gzip => {
@@ -218,10 +264,14 @@ fn inspect_zip<R: Read + Seek>(
                 materialize_gzip_reader(compressed, &cache_path)?;
                 let file = File::open(&cache_path).map_err(|error| error.to_string())?;
                 report.sources.push(source_report(
-                    source,
+                    source.clone(),
                     SourceFormat::Gzip,
                     Some(cache_path.to_string_lossy().into_owned()),
-                    inspect_records(file),
+                    inspect_records_with_sink(
+                        file,
+                        &source,
+                        record_sink.as_mut().map(|sink| &mut **sink),
+                    ),
                 ));
             }
             SourceFormat::Zip => {
@@ -252,6 +302,7 @@ fn inspect_zip<R: Read + Seek>(
                     &source,
                     depth + 1,
                     report,
+                    record_sink.as_mut().map(|sink| &mut **sink),
                 )?;
             }
             SourceFormat::Unknown => {
@@ -360,10 +411,19 @@ fn materialize_gzip_reader<R: Read>(reader: R, destination: &Path) -> Result<(),
 }
 
 fn inspect_records<R: Read>(mut reader: R) -> PacketLogStats {
+    inspect_records_with_sink(&mut reader, "", None)
+}
+
+fn inspect_records_with_sink<R: Read>(
+    mut reader: R,
+    source: &str,
+    mut record_sink: Option<&mut Vec<PacketLogRecord>>,
+) -> PacketLogStats {
     let mut stats = PacketLogStats::default();
     let mut length_bytes = [0_u8; 4];
     let mut timestamp_bytes = [0_u8; 8];
     let mut discard_buffer = [0_u8; 8192];
+    let mut record_index = 0_u64;
 
     loop {
         match reader.read_exact(&mut length_bytes) {
@@ -403,16 +463,32 @@ fn inspect_records<R: Read>(mut reader: R) -> PacketLogStats {
         stats.record_count += 1;
         stats.total_payload_bytes += u64::from(length - 12);
 
-        let mut remaining = u64::from(length - 12);
-        while remaining > 0 {
-            let requested = remaining.min(discard_buffer.len() as u64) as usize;
-            if let Err(error) = reader.read_exact(&mut discard_buffer[..requested]) {
+        if let Some(sink) = record_sink.as_mut() {
+            let mut payload = vec![0_u8; (length - 12) as usize];
+            if let Err(error) = reader.read_exact(&mut payload) {
                 stats.malformed = true;
                 stats.warning = Some(format!("truncated record payload: {error}"));
                 return stats;
             }
-            remaining -= requested as u64;
+            (**sink).push(PacketLogRecord {
+                source: source.to_owned(),
+                record_index,
+                timestamp_unix_ms: timestamp,
+                payload,
+            });
+        } else {
+            let mut remaining = u64::from(length - 12);
+            while remaining > 0 {
+                let requested = remaining.min(discard_buffer.len() as u64) as usize;
+                if let Err(error) = reader.read_exact(&mut discard_buffer[..requested]) {
+                    stats.malformed = true;
+                    stats.warning = Some(format!("truncated record payload: {error}"));
+                    return stats;
+                }
+                remaining -= requested as u64;
+            }
         }
+        record_index += 1;
     }
 
     stats

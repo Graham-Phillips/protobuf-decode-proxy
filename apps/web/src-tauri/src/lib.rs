@@ -67,7 +67,8 @@ struct HttpExchange {
     request_body_len: Option<u64>,
     response_body_len: Option<u64>,
     payload_hint: PayloadHint,
-    payload_decode: PayloadDecode,
+    request_payload_decode: PayloadDecode,
+    response_payload_decode: Option<PayloadDecode>,
     anomalies: Vec<AnomalyFinding>,
 }
 
@@ -1895,15 +1896,25 @@ impl HttpExchangeBuilder {
                 .as_ref()
                 .and_then(|event| event.body_capture.as_ref()),
         );
-        let payload_decode = decode_payload_preview(
+        let request_payload_decode = decode_payload_preview(
             &payload_hint,
             request.body_capture.as_ref(),
-            response
-                .as_ref()
-                .and_then(|event| event.body_capture.as_ref()),
-            response.as_ref().unwrap_or(&request),
+            None,
+            &request,
             schemas,
         );
+        let response_payload_decode = response.as_ref().map(|event| {
+            decode_payload_preview(
+                &payload_hint,
+                None,
+                event.body_capture.as_ref(),
+                event,
+                schemas,
+            )
+        });
+        let payload_decode = response_payload_decode
+            .as_ref()
+            .unwrap_or(&request_payload_decode);
         let anomalies = detect_http_anomalies(
             status,
             duration_ms,
@@ -1926,7 +1937,8 @@ impl HttpExchangeBuilder {
             request_body_len: request.body_len_hint,
             response_body_len,
             payload_hint,
-            payload_decode,
+            request_payload_decode,
+            response_payload_decode,
             anomalies,
         })
     }

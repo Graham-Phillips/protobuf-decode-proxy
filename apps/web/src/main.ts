@@ -55,7 +55,8 @@ type HttpExchange = {
   request_body_len: number | null
   response_body_len: number | null
   payload_hint: PayloadHint
-  payload_decode: PayloadDecode
+  request_payload_decode: PayloadDecode
+  response_payload_decode: PayloadDecode | null
   anomalies: AnomalyFinding[]
 }
 
@@ -177,8 +178,9 @@ type SortKey = 'started_at' | 'name' | 'method' | 'host' | 'status' | 'type' | '
 type SortDirection = 'asc' | 'desc'
 type ResourceFilter = 'all' | 'fetch' | 'document' | 'js' | 'css' | 'image' | 'font' | 'media' | 'ws' | 'protobuf' | 'json' | 'other'
 type HttpResourceKind = Exclude<ResourceFilter, 'all' | 'ws'>
+type HttpTrafficPart = 'request' | 'response'
 type TrafficRow =
-  | { kind: 'http'; exchange: HttpExchange }
+  | { kind: 'http'; part: HttpTrafficPart; exchange: HttpExchange }
   | { kind: 'websocket'; preview: WebSocketMessagePreview }
 
 const app = document.querySelector<HTMLDivElement>('#app')!
@@ -972,7 +974,7 @@ function renderTrafficMessages() {
       <tr class="${trafficRowKey(row) === selectedTrafficKey ? 'selected' : ''}${pair ? ` paired-row pair-tone-${pair.tone}` : ''}" data-traffic-key="${escapeHtml(trafficRowKey(row))}" title="${escapeHtml(pair ? `${trafficRowHost(row)}; paired with message #${pair.messageId}` : trafficRowHost(row))}">
         <td>${escapeHtml(trafficRowName(row))}${pair ? `<span class="pair-badge" title="Matched by request message number">Pair #${escapeHtml(String(pair.messageId))}</span>` : ''}</td>
         <td>${trafficRowStatus(row)}</td>
-        <td>${payloadLabel(trafficRowPayloadHint(row))}</td>
+        <td>${payloadLabel(trafficRowPayloadHint(row), row.kind === 'http' ? row.part : null)}</td>
         <td>${escapeHtml(trafficRowDirection(row))}</td>
         <td>${byteLabel(trafficRowSize(row))}</td>
         <td>${escapeHtml(trafficRowDuration(row))}</td>
@@ -1006,7 +1008,7 @@ function renderSelectedTraffic() {
     return
   }
 
-  const payloadDecode = row.kind === 'http' ? row.exchange.payload_decode : row.preview.payload_decode
+  const payloadDecode = trafficRowDecode(row)
   const activeDecode = selectedWebSocketDecode ?? payloadDecode
   const signature = JSON.stringify({
     key: selectedTrafficKey,
@@ -1021,6 +1023,7 @@ function renderSelectedTraffic() {
           requestBody: row.exchange.request_body_len,
           responseBody: row.exchange.response_body_len,
           anomalies: row.exchange.anomalies.map((anomaly) => `${anomaly.kind}:${anomaly.summary}`),
+          part: row.part,
         }
       : {
           timestamp: row.preview.timestamp_unix_ms,
@@ -1058,7 +1061,7 @@ function selectedTrafficCopyText() {
   }
 
   const payloadDecode = row.kind === 'http'
-    ? row.exchange.payload_decode
+    ? trafficRowDecode(row)
     : selectedWebSocketDecode ?? row.preview.payload_decode
   const applicationMessages = applicationMessageEntries(payloadDecode).map((message) => ({
     messageType: friendlyMessageName(message.messageName),
@@ -1070,7 +1073,8 @@ function selectedTrafficCopyText() {
     messageType: payloadDecode.schema_message ? friendlyMessageName(payloadDecode.schema_message) : null,
     protobufType: payloadDecode.schema_message,
     status: payloadDecode.status,
-    direction: row.kind === 'http' ? payloadDecode.direction : directionLabel(row.preview.direction),
+    direction: row.kind === 'http' ? trafficRowDirection(row) : directionLabel(row.preview.direction),
+    part: row.kind === 'http' ? row.part : null,
     target: trafficRowHost(row),
     path: row.kind === 'http' ? row.exchange.path : row.preview.path,
     messages: applicationMessages.length > 0 ? applicationMessages : protobufFieldsToObject(payloadDecode.fields),
@@ -1117,6 +1121,7 @@ function renderSelectedExchange() {
           <div><dt>Host</dt><dd>${serverBadge(exchange.authority)}</dd></div>
           <div><dt>Body</dt><dd>${byteLabel(exchange.request_body_len)}</dd></div>
           <div><dt>Content type</dt><dd>${escapeHtml(exchange.payload_hint.request_content_type ?? '-')}</dd></div>
+          <div><dt>Decode</dt><dd>${escapeHtml(exchange.request_payload_decode.status)}</dd></div>
         </dl>
       </section>
       <section class="detail-pane">
@@ -1130,7 +1135,7 @@ function renderSelectedExchange() {
           <div><dt>Size</dt><dd>${byteLabel(exchange.response_body_len)}</dd></div>
           <div><dt>Server time</dt><dd>${escapeHtml(exchange.server_time ?? '-')}</dd></div>
           <div><dt>Content type</dt><dd>${escapeHtml(exchange.payload_hint.response_content_type ?? '-')}</dd></div>
-          <div><dt>Decode</dt><dd>${escapeHtml(exchange.payload_decode.status)}</dd></div>
+          <div><dt>Decode</dt><dd>${escapeHtml(exchange.response_payload_decode?.status ?? 'No response body to decode')}</dd></div>
           <div><dt>Anomalies</dt><dd>${anomalyLabels(exchange.anomalies)}</dd></div>
         </dl>
       </section>
@@ -1546,17 +1551,30 @@ function bindWebSocketDecodeControls(preview: WebSocketMessagePreview) {
 
 function trafficRows(): TrafficRow[] {
   return [
-    ...latestExchanges.map((exchange) => ({ kind: 'http' as const, exchange })),
+    ...latestExchanges.flatMap((exchange) => [
+      { kind: 'http' as const, part: 'request' as const, exchange },
+      ...(exchange.response_payload_decode
+        ? [{ kind: 'http' as const, part: 'response' as const, exchange }]
+        : []),
+    ]),
     ...latestWebSocketPreviews.map((preview) => ({ kind: 'websocket' as const, preview })),
   ]
 }
 
 function trafficRowKey(row: TrafficRow) {
-  return `${row.kind}:${row.kind === 'http' ? row.exchange.id : row.preview.id}`
+  return row.kind === 'http'
+    ? `${row.kind}:${row.exchange.id}:${row.part}`
+    : `${row.kind}:${row.preview.id}`
 }
 
 function trafficRowTimestamp(row: TrafficRow) {
-  return row.kind === 'http' ? row.exchange.started_at_unix_ms : row.preview.timestamp_unix_ms
+  if (row.kind !== 'http') {
+    return row.preview.timestamp_unix_ms
+  }
+
+  return row.part === 'response'
+    ? row.exchange.completed_at_unix_ms ?? row.exchange.started_at_unix_ms
+    : row.exchange.started_at_unix_ms
 }
 
 function trafficRowName(row: TrafficRow) {
@@ -1569,7 +1587,7 @@ function trafficRowName(row: TrafficRow) {
 
 function trafficRowDirection(row: TrafficRow) {
   if (row.kind === 'http') {
-    return row.exchange.status === null ? 'Request' : 'Request + response'
+    return row.part === 'request' ? 'Request' : 'Response'
   }
 
   if (row.preview.direction === 'Request') {
@@ -1584,16 +1602,20 @@ function trafficRowDirection(row: TrafficRow) {
 }
 
 function trafficRowSize(row: TrafficRow) {
-  return row.kind === 'http' ? row.exchange.response_body_len : row.preview.body_len
+  if (row.kind !== 'http') {
+    return row.preview.body_len
+  }
+
+  return row.part === 'request' ? row.exchange.request_body_len : row.exchange.response_body_len
 }
 
 function trafficRowDuration(row: TrafficRow) {
-  return row.kind === 'http' ? durationLabel(row.exchange.duration_ms) : '-'
+  return row.kind === 'http' && row.part === 'response' ? durationLabel(row.exchange.duration_ms) : '-'
 }
 
 function trafficRowMethod(row: TrafficRow) {
   if (row.kind === 'http') {
-    return row.exchange.method ?? '-'
+    return row.part === 'request' ? row.exchange.method ?? '-' : '-'
   }
 
   return row.preview.message_kind ?? 'Frame'
@@ -1604,7 +1626,13 @@ function trafficRowHost(row: TrafficRow) {
 }
 
 function trafficRowStatus(row: TrafficRow) {
-  return row.kind === 'http' ? statusLabel(row.exchange.status) : '<span class="muted">Frame</span>'
+  if (row.kind !== 'http') {
+    return '<span class="muted">Frame</span>'
+  }
+
+  return row.part === 'request'
+    ? '<span class="status-badge pending">Request</span>'
+    : statusLabel(row.exchange.status)
 }
 
 function trafficRowPayloadHint(row: TrafficRow) {
@@ -1612,7 +1640,13 @@ function trafficRowPayloadHint(row: TrafficRow) {
 }
 
 function trafficRowDecode(row: TrafficRow) {
-  return row.kind === 'http' ? row.exchange.payload_decode : row.preview.payload_decode
+  if (row.kind !== 'http') {
+    return row.preview.payload_decode
+  }
+
+  return row.part === 'request'
+    ? row.exchange.request_payload_decode
+    : row.exchange.response_payload_decode!
 }
 
 function trafficRowMessageNames(row: TrafficRow) {
@@ -1642,7 +1676,7 @@ function isKeepAliveAckRow(row: TrafficRow) {
 }
 
 function trafficRowAnomalies(row: TrafficRow) {
-  return row.kind === 'http' ? row.exchange.anomalies : []
+  return row.kind === 'http' && row.part === 'response' ? row.exchange.anomalies : []
 }
 
 function filteredTrafficRows() {
@@ -1684,7 +1718,7 @@ function filteredTrafficRows() {
       trafficRowHost(row),
       row.kind === 'http' ? row.exchange.scheme : row.preview.scheme,
       row.kind === 'http' ? row.exchange.path : row.preview.path,
-      row.kind === 'http' && row.exchange.status !== null ? String(row.exchange.status) : null,
+      row.kind === 'http' && row.part === 'response' && row.exchange.status !== null ? String(row.exchange.status) : null,
       payloadHint.likely_protocol,
       payloadHint.decode_status,
       payloadHint.request_content_type,
@@ -1700,9 +1734,13 @@ function filteredTrafficRows() {
 }
 
 function filteredExchanges() {
-  return filteredTrafficRows()
-    .filter((row): row is { kind: 'http'; exchange: HttpExchange } => row.kind === 'http')
-    .map((row) => row.exchange)
+  const visibleExchangeIds = new Set(
+    filteredTrafficRows()
+      .filter((row) => row.kind === 'http')
+      .map((row) => row.exchange.id),
+  )
+
+  return latestExchanges.filter((exchange) => visibleExchangeIds.has(exchange.id))
 }
 
 function resourceFilterMatchesExchange(exchange: HttpExchange) {
@@ -1876,7 +1914,7 @@ function sortValue(exchange: HttpExchange, key: SortKey): string | number {
     case 'time':
       return exchange.duration_ms ?? -1
     case 'decode':
-      return exchange.payload_decode.status
+      return exchange.response_payload_decode?.status ?? exchange.request_payload_decode.status
     case 'anomalies':
       return exchange.anomalies.length
   }
@@ -1914,8 +1952,12 @@ function updateSortHeaders() {
   })
 }
 
-function payloadLabel(payloadHint: PayloadHint) {
-  const contentType = payloadHint.response_content_type ?? payloadHint.request_content_type ?? '-'
+function payloadLabel(payloadHint: PayloadHint, side: HttpTrafficPart | null = null) {
+  const contentType = side === 'request'
+    ? payloadHint.request_content_type ?? '-'
+    : side === 'response'
+      ? payloadHint.response_content_type ?? '-'
+      : payloadHint.response_content_type ?? payloadHint.request_content_type ?? '-'
   const normalizedContentType = contentType.toLowerCase().split(';', 1)[0].trim()
   const visibleContentType = normalizedContentType === 'application/octet-stream' ? null : contentType
   return `
@@ -2290,7 +2332,30 @@ function sortTrafficRows(rows: TrafficRow[]) {
 
 function trafficSortValue(row: TrafficRow, key: SortKey): string | number {
   if (row.kind === 'http') {
-    return sortValue(row.exchange, key)
+    switch (key) {
+      case 'started_at':
+        return trafficRowTimestamp(row)
+      case 'name':
+        return trafficRowName(row)
+      case 'method':
+        return trafficRowMethod(row)
+      case 'host':
+        return trafficRowHost(row)
+      case 'status':
+        return row.part === 'response' ? row.exchange.status ?? -1 : -1
+      case 'type':
+        return row.exchange.payload_hint.likely_protocol
+      case 'initiator':
+        return trafficRowDirection(row)
+      case 'size':
+        return trafficRowSize(row) ?? -1
+      case 'time':
+        return row.part === 'response' ? row.exchange.duration_ms ?? -1 : -1
+      case 'decode':
+        return trafficRowDecode(row).status
+      case 'anomalies':
+        return trafficRowAnomalies(row).length
+    }
   }
 
   switch (key) {

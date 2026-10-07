@@ -225,7 +225,7 @@ impl<'a> ProtoDecoderRegistry<'a> {
 
 fn message_descriptor_shape(
     descriptor: &prost_reflect::MessageDescriptor,
-) -> Vec<(i32, String, String, String)> {
+) -> Vec<(u32, String, String, String)> {
     let mut fields = descriptor
         .fields()
         .map(|field| {

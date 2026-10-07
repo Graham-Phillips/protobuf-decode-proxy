@@ -2,6 +2,7 @@
   "name": "protobuf-decoder",
   "private": true,
   "scripts": {
+    "tauri": "pnpm --dir apps/web tauri",
     "version:minor": "node scripts/bump-version.mjs",
     "release": "pnpm --dir apps/web release"
   }

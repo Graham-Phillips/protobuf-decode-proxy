@@ -2,6 +2,18 @@
 
 Install dependencies from the repository root with `pnpm install`.
 
+## Development
+
+From the repository root or `apps/web`, run:
+
+```powershell
+pnpm tauri dev
+```
+
+This starts the frontend dev server and desktop app. The root `tauri` command
+forwards to `apps/web`; other Tauri commands, such as `pnpm tauri build`, also
+work from either directory.
+
 ## Release build with a version bump
 
 From the repository root, run:

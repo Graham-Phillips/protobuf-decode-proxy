@@ -16,6 +16,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use tauri::Manager;
 
+mod packet_log;
+
 #[derive(Default)]
 struct ProxyState {
     handle: Mutex<Option<ProxyHandle>>,
@@ -2912,6 +2914,14 @@ async fn stop_proxy(state: tauri::State<'_, ProxyState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn inspect_packet_log_sources(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<packet_log::PacketLogImportReport, String> {
+    packet_log::inspect_sources(&app, paths)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2978,6 +2988,7 @@ pub fn run() {
             export_decoded_websocket_message,
             export_ca_cert,
             trust_ca_cert_for_current_user,
+            inspect_packet_log_sources,
             stop_proxy
         ])
         .run(tauri::generate_context!())

@@ -153,9 +153,19 @@ message decoding (nested rows are flattened in this copied example):
   on the right, aligned by correlation so the matching response sits beside its
   request. Keep WebSocket messages as a direction-aware stream when no pairing
   evidence exists.
-- [ ] Add text search over message names, paths, session IDs, decoded keys and
-  values, and useful transport metadata. Selecting a result must select the
-  underlying Traffic row.
+- [ ] Add local text search over message names, paths, session IDs, transport
+  metadata, and case-insensitive request/response headers.
+- [ ] Search raw UTF-8/text and JSON bodies where available, protobuf wire
+  previews, and schema-decoded protobuf field names, nested values, and
+  envelope/application message names. Keep request/response direction attached
+  to each match and do not claim that arbitrary binary bytes are searchable
+  without a decoder.
+- [ ] Index decoded values as derived local data while preserving the raw
+  payload as the source of truth. Update the index for live traffic, imported
+  logs, and saved captures without sending payloads to a cloud service.
+- [ ] Show match snippets and source/direction context; selecting a result must
+  select the underlying Traffic row/message and eventually highlight the match
+  in the decoded/header/body inspector.
 - [x] Clarify the Resource `Proto` filter versus Payload `protobuf` filter. The
   UI now labels them as `Proto resource` and `Payload type: Protobuf`; revisit
   the underlying predicates if real captures show they are still equivalent.
@@ -228,6 +238,11 @@ and inspect the useful data without navigating through unrelated detail.
 - [ ] Add a way to save captured data to a log file. Define the log format,
   metadata, schema references, raw payload retention, and whether decoded data
   is stored as a derived view.
+- [ ] Separate capture snapshots from continuous recording: allow saving the
+  current live session and optionally appending new live events while the proxy
+  is running.
+- [ ] Preserve the original source file, archive entry, record offset, and
+  parser version on imported events so results remain traceable.
 - [ ] Allow users to select individual traffic/messages or a range of lines and
   save only the selected data to a file.
 - [ ] Add recording mode: for a selected request, save the request and its
@@ -243,6 +258,11 @@ and inspect the useful data without navigating through unrelated detail.
 
 - [ ] Support live proxy capture and decode as the default real-time workflow.
 - [ ] Add optional log recording while real-time decoding is active.
+- [ ] Add an explicit Traffic source/session switch for Live, Imported, and
+  Replay data. Keep imported logs out of the live stream and preserve the live
+  session when switching views.
+- [ ] Make it possible to pause live monitoring/display without discarding the
+  live capture, and show the active source clearly in the UI.
 - [ ] Keep capture status, refresh interval, dropped data, and decode errors
   visible without crowding the message inspector.
 
@@ -250,8 +270,33 @@ and inspect the useful data without navigating through unrelated detail.
 
 - [ ] Add an open-log workflow for one or more log files.
 - [ ] Support file picker and drag-and-drop input.
-- [ ] Define and implement supported archives/containers, including `.zip`,
-  `.dat`, and timezone-aware `.tz` data where applicable.
+- [ ] Support multiple selected/dropped files as one named import session while
+  retaining per-file source identity and errors.
+- [ ] Sniff file signatures as well as extensions and support raw packet-log
+  `.dat`, gzip-compressed `.dat.gz`, and zip archives containing supported log
+  entries. Walk nested zip archives recursively, with a maximum nesting depth
+  and a clear source path such as `outer.zip!/inner.zip!/packet.dat.gz`.
+- [ ] When a `.gz` packet log is opened, stream-decompress it and offer to save
+  the materialized `.dat` in an application-managed user-data cache using a
+  collision-safe name. Keep the original `.gz` or archive unchanged and record
+  whether the `.dat` was generated or already present. Expose the cache
+  location in the UI and leave a configurable directory override for a later
+  settings pass.
+- [ ] Detect packet-log `.dat` members inside `.tar` files found in real-world
+  exports, or report them as unsupported with the archive member name rather
+  than treating the tar bytes as a raw packet log.
+- [ ] Define whether unsupported archive entries are skipped or reported.
+- [ ] Implement a streaming packet-log decoder adapter compatible with the
+  existing `wfe-central:tools:Packetlog viewer` format. Do not infer the wire
+  format from the filename; capture representative files or the existing
+  parser contract as golden fixtures first.
+- [ ] Normalize decoded log records into the same event/exchange model used by
+  live proxy capture, including timestamps, direction, correlation, raw bytes,
+  decode status, and source metadata.
+- [ ] Define stable multi-file ordering: timestamp order with file/order/offset
+  tie-breakers, plus an explicit warning when timestamps are missing or mixed.
+- [ ] Stream large imports with progress, cancellation, bounded memory, and a
+  malformed-record report instead of loading every file into the webview.
 - [ ] Show the selected log/set, decode progress, malformed entries, and source
   file for each message.
 
@@ -259,6 +304,8 @@ and inspect the useful data without navigating through unrelated detail.
 
 - [ ] Add Replay Mode for previously captured request/response data, with clear
   control over timing, ordering, and whether traffic is sent upstream.
+- [ ] Load a saved native capture as an immutable Imported or Replay session;
+  never silently merge it into the live capture.
 - [ ] Ingest persisted capture/log files as a first-class source of Traffic data,
   preserving raw payloads, decoded data, codec identity, timestamps, and session
   identifiers.
@@ -270,7 +317,11 @@ and inspect the useful data without navigating through unrelated detail.
 
 ### Dev server / offline local mode
 
-- [ ] Add a mode for selecting the current offline request/response set.
+- [ ] Add a dedicated Local Dev Server mode that serves predefined responses
+  directly to the client on a separate local endpoint/port.
+- [ ] Add explicit Stub Only, Hybrid Fallback, and Replay behavior; make the
+  active mode visible and prevent fixture-backed responses from being confused
+  with passive live monitoring.
 - [ ] Implement request-to-response mapping backed by a directory of fixtures.
 - [ ] Support partial offline mode where mapped requests are served locally but
   authentication/login still uses the real server.
@@ -291,6 +342,15 @@ and inspect the useful data without navigating through unrelated detail.
 
 - [ ] Choose a versioned log format that can preserve raw traffic, decoded JSON,
   schema identity, timestamps, direction, and request/response correlation.
+- [ ] Define a source/session envelope around normalized events, including
+  `live`, `imported`, `replay`, and `stub` provenance without duplicating event
+  payloads.
+- [ ] Decide whether the native saved format is a streaming length-delimited
+  binary format, JSON Lines with base64 payloads, or a container holding both
+  metadata and raw records. Keep decoded JSON derived and reproducible.
+- [ ] Define round-trip scope: native save/load first; add compatibility export
+  to the wfe-central packet-log format only after its exact writer contract is
+  known.
 - [ ] Decide whether log archives are opened in place or extracted into a
   managed workspace, and how large files are handled safely.
 - [ ] Define the persistence boundary for UI preferences, capture sessions,
@@ -299,3 +359,6 @@ and inspect the useful data without navigating through unrelated detail.
   incremental events, or a hybrid approach.
 - [ ] Add end-to-end fixtures covering real-time capture, saved logs, replay,
   partial offline mode, response sequences, and missing/ambiguous mappings.
+- [ ] Add end-to-end coverage for multi-file imports, `.dat`, `.dat.gz`, zip
+  containers, drag-and-drop, cancellation, malformed records, source switching,
+  and live/imported isolation.

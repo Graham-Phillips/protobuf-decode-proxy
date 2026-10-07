@@ -136,6 +136,24 @@ type ProtoSchemaStatus = {
   message_names: string[]
 }
 
+type PacketLogImportReport = {
+  cache_directory: string
+  sources: PacketLogSourceReport[]
+  errors: string[]
+}
+
+type PacketLogSourceReport = {
+  source: string
+  format: string
+  materialized_dat: string | null
+  record_count: number
+  total_payload_bytes: number
+  first_timestamp_unix_ms: number | null
+  last_timestamp_unix_ms: number | null
+  malformed: boolean
+  warning: string | null
+}
+
 type WebSocketProtoMapping = {
   id: string
   name: string
@@ -241,6 +259,19 @@ app.innerHTML = `
             <span>Show StreamingPriceV4</span>
           </label>
           <button id="analyse-selection" class="primary-button" type="button">Analyse Visible</button>
+        </section>
+        <section class="tool-panel">
+          <div class="panel-heading">
+            <h2>Import packet logs</h2>
+            <span class="small-value">ZIP / GZ / DAT</span>
+          </div>
+          <label class="field">
+            <span>File paths</span>
+            <textarea id="packet-log-paths" rows="3" placeholder="One path per line"></textarea>
+          </label>
+          <button id="inspect-packet-logs" class="primary-button" type="button">Inspect sources</button>
+          <p id="packet-log-status" class="status-message" role="status" aria-live="polite">No packet-log import yet.</p>
+          <div id="packet-log-results" class="packet-log-results"></div>
         </section>
       </aside>
 
@@ -608,6 +639,10 @@ const streamingPriceFilter = document.querySelector<HTMLInputElement>('#streamin
 const clearFiltersButton = document.querySelector<HTMLButtonElement>('#clear-filters')!
 const clearCaptureButton = document.querySelector<HTMLButtonElement>('#clear-capture')!
 const analyseSelectionButton = document.querySelector<HTMLButtonElement>('#analyse-selection')!
+const packetLogPaths = document.querySelector<HTMLTextAreaElement>('#packet-log-paths')!
+const inspectPacketLogsButton = document.querySelector<HTMLButtonElement>('#inspect-packet-logs')!
+const packetLogStatus = document.querySelector<HTMLElement>('#packet-log-status')!
+const packetLogResults = document.querySelector<HTMLElement>('#packet-log-results')!
 const trafficSummary = document.querySelector<HTMLElement>('#traffic-summary')!
 const summaryMessages = document.querySelector<HTMLElement>('#summary-messages')!
 const summaryDecoded = document.querySelector<HTMLElement>('#summary-decoded')!
@@ -2086,6 +2121,25 @@ function schemaBundleMatchesPreview(bundle: ProtoSchemaStatus, preview: WebSocke
   return true
 }
 
+function renderPacketLogImportReport(report: PacketLogImportReport) {
+  const sourceCount = report.sources.length
+  const recordCount = report.sources.reduce((total, source) => total + source.record_count, 0)
+  packetLogStatus.textContent = `Inspected ${sourceCount} source${sourceCount === 1 ? '' : 's'} and ${recordCount.toLocaleString()} record${recordCount === 1 ? '' : 's'}. Cache: ${report.cache_directory}`
+  packetLogResults.innerHTML = [
+    ...report.sources.slice(0, 12).map((source) => `
+      <div class="packet-log-result">
+        <strong>${escapeHtml(source.format.toUpperCase())}</strong>
+        <span>${source.record_count.toLocaleString()} records${source.malformed ? ' - malformed' : ''}</span>
+        <small title="${escapeHtml(source.source)}">${escapeHtml(source.source)}</small>
+        ${source.materialized_dat ? `<small>Cached as ${escapeHtml(source.materialized_dat)}</small>` : ''}
+        ${source.warning ? `<small class="status-error">${escapeHtml(source.warning)}</small>` : ''}
+      </div>
+    `),
+    report.sources.length > 12 ? `<small>Showing the first 12 sources.</small>` : '',
+    ...report.errors.map((error) => `<small class="status-error">${escapeHtml(error)}</small>`),
+  ].join('') || '<small>No packet-log entries found.</small>'
+}
+
 function sortTrafficRows(rows: TrafficRow[]) {
   return [...rows].sort((left, right) => {
     const result = compareSortValue(trafficSortValue(left, sortKey), trafficSortValue(right, sortKey))
@@ -2505,6 +2559,33 @@ copySelectedTrafficButton.addEventListener('click', async () => {
     selectedCopyStatus.textContent = `Copy failed: ${String(error)}`
   } finally {
     copySelectedTrafficButton.disabled = false
+  }
+})
+
+inspectPacketLogsButton.addEventListener('click', async () => {
+  const paths = packetLogPaths.value
+    .split(/\r?\n/)
+    .map((path) => path.trim())
+    .filter(Boolean)
+
+  if (paths.length === 0) {
+    packetLogStatus.textContent = 'Enter at least one packet-log path.'
+    return
+  }
+
+  inspectPacketLogsButton.disabled = true
+  inspectPacketLogsButton.textContent = 'Inspecting...'
+  packetLogStatus.textContent = 'Inspecting sources and materializing gzip logs...'
+  packetLogResults.textContent = ''
+
+  try {
+    const report = await invoke<PacketLogImportReport>('inspect_packet_log_sources', { paths })
+    renderPacketLogImportReport(report)
+  } catch (error) {
+    packetLogStatus.textContent = `Packet-log import failed: ${String(error)}`
+  } finally {
+    inspectPacketLogsButton.disabled = false
+    inspectPacketLogsButton.textContent = 'Inspect sources'
   }
 })
 

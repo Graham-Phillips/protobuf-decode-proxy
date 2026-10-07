@@ -385,7 +385,8 @@ fn inspect_records<R: Read>(mut reader: R) -> PacketLogStats {
         }
 
         let length = u32::from_be_bytes(length_bytes);
-        if !(8..=MAX_RECORD_LENGTH).contains(&length) {
+        // The stored length includes this four-byte length prefix.
+        if !(12..=MAX_RECORD_LENGTH).contains(&length) {
             stats.malformed = true;
             stats.warning = Some(format!("invalid record length {length}"));
             break;
@@ -400,9 +401,9 @@ fn inspect_records<R: Read>(mut reader: R) -> PacketLogStats {
         stats.first_timestamp_unix_ms.get_or_insert(timestamp);
         stats.last_timestamp_unix_ms = Some(timestamp);
         stats.record_count += 1;
-        stats.total_payload_bytes += u64::from(length - 8);
+        stats.total_payload_bytes += u64::from(length - 12);
 
-        let mut remaining = u64::from(length - 8);
+        let mut remaining = u64::from(length - 12);
         while remaining > 0 {
             let requested = remaining.min(discard_buffer.len() as u64) as usize;
             if let Err(error) = reader.read_exact(&mut discard_buffer[..requested]) {
@@ -466,7 +467,7 @@ mod tests {
     #[test]
     fn flags_truncated_payload() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&12_u32.to_be_bytes());
+        bytes.extend_from_slice(&14_u32.to_be_bytes());
         bytes.extend_from_slice(&1_700_000_000_000_u64.to_be_bytes());
         bytes.extend_from_slice(b"x");
 
@@ -478,7 +479,7 @@ mod tests {
     }
 
     fn append_record(bytes: &mut Vec<u8>, timestamp: u64, payload: &[u8]) {
-        bytes.extend_from_slice(&((payload.len() + 8) as u32).to_be_bytes());
+        bytes.extend_from_slice(&((payload.len() + 12) as u32).to_be_bytes());
         bytes.extend_from_slice(&timestamp.to_be_bytes());
         bytes.extend_from_slice(payload);
     }

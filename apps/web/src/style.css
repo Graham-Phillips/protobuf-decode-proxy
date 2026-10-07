@@ -604,7 +604,7 @@ h3 {
 
 .exchange-table th:nth-child(1),
 .exchange-table td:nth-child(1) {
-  width: 18%;
+  width: 12%;
 }
 
 .exchange-table th:nth-child(4),
@@ -662,6 +662,42 @@ h3 {
 .exchange-table tr:hover td,
 .exchange-table tr.selected td {
   background: var(--accent-soft);
+}
+
+.exchange-table tr.paired-row td:first-child {
+  border-left: 3px solid var(--pair-color, var(--accent));
+}
+
+.exchange-table tr.pair-tone-0 {
+  --pair-color: #2f80ed;
+}
+
+.exchange-table tr.pair-tone-1 {
+  --pair-color: #27ae60;
+}
+
+.exchange-table tr.pair-tone-2 {
+  --pair-color: #d97706;
+}
+
+.exchange-table tr.pair-tone-3 {
+  --pair-color: #c241a5;
+}
+
+.exchange-table tr.pair-tone-4 {
+  --pair-color: #0f9f9a;
+}
+
+.pair-badge {
+  display: inline-block;
+  margin: 4px 0 0;
+  padding: 1px 5px;
+  border: 1px solid var(--pair-color, var(--accent));
+  border-radius: 999px;
+  color: var(--pair-color, var(--accent-strong));
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.3;
 }
 
 .server-badge {

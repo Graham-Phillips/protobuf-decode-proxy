@@ -258,6 +258,10 @@ app.innerHTML = `
             <input id="streaming-price-filter" type="checkbox" checked>
             <span>Show StreamingPriceV4</span>
           </label>
+          <label class="check-row">
+            <input id="keepalive-ack-filter" type="checkbox">
+            <span>Show keep-alive ACKs</span>
+          </label>
           <button id="analyse-selection" class="primary-button" type="button">Analyse Visible</button>
         </section>
         <section class="tool-panel">
@@ -311,7 +315,7 @@ app.innerHTML = `
                   <th><button class="sort-header" type="button" data-sort-key="name">Name</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="status">Status</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="type">Type</button></th>
-                  <th><button class="sort-header" type="button" data-sort-key="initiator">Direction</button></th>
+                  <th><button class="sort-header" type="button" data-sort-key="initiator">Flow</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="size">Size</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="time">Time</button></th>
                   <th><button class="sort-header" type="button" data-sort-key="method">Method</button></th>
@@ -636,6 +640,7 @@ const searchInput = document.querySelector<HTMLInputElement>('#traffic-search')!
 const protocolFilter = document.querySelector<HTMLSelectElement>('#protocol-filter')!
 const anomalyFilter = document.querySelector<HTMLInputElement>('#anomaly-filter')!
 const streamingPriceFilter = document.querySelector<HTMLInputElement>('#streaming-price-filter')!
+const keepAliveAckFilter = document.querySelector<HTMLInputElement>('#keepalive-ack-filter')!
 const clearFiltersButton = document.querySelector<HTMLButtonElement>('#clear-filters')!
 const clearCaptureButton = document.querySelector<HTMLButtonElement>('#clear-capture')!
 const analyseSelectionButton = document.querySelector<HTMLButtonElement>('#analyse-selection')!
@@ -687,6 +692,7 @@ let sortKey: SortKey = 'started_at'
 let sortDirection: SortDirection = 'asc'
 let activeResourceFilters = new Set<ResourceFilter>()
 let autoScrollEnabled = true
+let currentTrafficPairs = new Map<string, TrafficPairInfo>()
 
 const uiPreferencesKey = 'protobuf-decoder-ui-preferences-v1'
 
@@ -696,6 +702,7 @@ type UiPreferences = {
   protocol?: string
   anomaliesOnly?: boolean
   showStreamingPriceV4?: boolean
+  showKeepAliveAcks?: boolean
   resourceFilters?: ResourceFilter[]
   autoScroll?: boolean
 }
@@ -717,6 +724,7 @@ function saveUiPreferences() {
       protocol: protocolFilter.value,
       anomaliesOnly: anomalyFilter.checked,
       showStreamingPriceV4: streamingPriceFilter.checked,
+      showKeepAliveAcks: keepAliveAckFilter.checked,
       resourceFilters: [...activeResourceFilters],
       autoScroll: autoScrollEnabled,
     } satisfies UiPreferences))
@@ -739,6 +747,7 @@ protocolFilter.value = savedUiPreferences.protocol && [...protocolFilter.options
   : 'all'
 anomalyFilter.checked = savedUiPreferences.anomaliesOnly === true
 streamingPriceFilter.checked = savedUiPreferences.showStreamingPriceV4 !== false
+keepAliveAckFilter.checked = savedUiPreferences.showKeepAliveAcks === true
 activeResourceFilters = new Set((savedUiPreferences.resourceFilters ?? []).filter((filter) => filter !== 'all'))
 autoScrollEnabled = savedUiPreferences.autoScroll !== false
 autoScrollToggle.checked = autoScrollEnabled
@@ -915,12 +924,13 @@ function renderSelectedWebSocketPreview() {
 }
 
 function renderTrafficMessages() {
+  const allRows = trafficRows()
+  currentTrafficPairs = buildTrafficPairMap(allRows)
   const visibleRows = filteredTrafficRows()
   const sortedRows = sortTrafficRows(visibleRows)
   const visibleWindow = sortedRows
   const scrollTopBeforeRender = exchangeTableWrap.scrollTop
   const shouldPreserveScroll = !autoScrollExchanges
-  const allRows = trafficRows()
   const decodedRows = allRows.filter((row) => {
     const decode = trafficRowDecode(row)
     return decode.schema_message !== null && decode.fields.length > 0
@@ -937,8 +947,8 @@ function renderTrafficMessages() {
   summaryAnomalies.textContent = String(anomalies)
   summaryWebSockets.textContent = String(latestWebSocketPreviews.length)
   summaryFilters.textContent = activeResourceFilters.size === 0
-    ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${anomalyFilter.checked ? ', anomalies' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}`
-    : `${resourceFilterSummary()}${anomalyFilter.checked ? ', anomalies' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}`
+    ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${anomalyFilter.checked ? ', anomalies' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveAckFilter.checked ? '' : ', keep-alive ACKs hidden'}`
+    : `${resourceFilterSummary()}${anomalyFilter.checked ? ', anomalies' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveAckFilter.checked ? '' : ', keep-alive ACKs hidden'}`
   analyseSelectionButton.disabled = visibleRows.length === 0
 
   if (visibleWindow.length === 0) {
@@ -956,9 +966,11 @@ function renderTrafficMessages() {
   }
 
   trafficMessages.innerHTML = visibleWindow
-    .map((row) => `
-      <tr class="${trafficRowKey(row) === selectedTrafficKey ? 'selected' : ''}" data-traffic-key="${escapeHtml(trafficRowKey(row))}" title="${escapeHtml(trafficRowHost(row))}">
-        <td>${escapeHtml(trafficRowName(row))}</td>
+    .map((row) => {
+      const pair = trafficPairForRow(row)
+      return `
+      <tr class="${trafficRowKey(row) === selectedTrafficKey ? 'selected' : ''}${pair ? ` paired-row pair-tone-${pair.tone}` : ''}" data-traffic-key="${escapeHtml(trafficRowKey(row))}" title="${escapeHtml(pair ? `${trafficRowHost(row)}; paired with message #${pair.messageId}` : trafficRowHost(row))}">
+        <td>${escapeHtml(trafficRowName(row))}${pair ? `<span class="pair-badge" title="Matched by request message number">Pair #${escapeHtml(String(pair.messageId))}</span>` : ''}</td>
         <td>${trafficRowStatus(row)}</td>
         <td>${payloadLabel(trafficRowPayloadHint(row))}</td>
         <td>${escapeHtml(trafficRowDirection(row))}</td>
@@ -969,7 +981,8 @@ function renderTrafficMessages() {
         <td>${decodeLabel(trafficRowDecode(row))}</td>
         <td>${trafficRowAnomalies(row).length > 0 ? anomalyLabels(trafficRowAnomalies(row)) : '<span class="muted">None</span>'}</td>
       </tr>
-    `)
+    `
+    })
     .join('')
 
   if (shouldPreserveScroll) {
@@ -1220,6 +1233,106 @@ function applicationMessageEntries(payloadDecode: PayloadDecode) {
   })
 }
 
+type ApplicationMessageMetadata = {
+  messageId: number | null
+  requestMessageId: number | null
+  messageType: number | null
+  messageName: string | null
+}
+
+type TrafficPairInfo = {
+  messageId: number
+  tone: number
+}
+
+function numericProtobufField(fields: ProtobufFieldPreview[], name: string) {
+  const field = fields.find((candidate) => candidate.field_name === name)
+  if (!field || !/^-?\d+(\.\d+)?$/.test(field.value_preview)) {
+    return null
+  }
+
+  const value = Number(field.value_preview)
+  return Number.isFinite(value) ? value : null
+}
+
+function applicationMessageMetadata(payloadDecode: PayloadDecode): ApplicationMessageMetadata[] {
+  const messageList = payloadDecode.fields.find((field) => field.field_name === 'messageList')
+  if (!messageList) {
+    return []
+  }
+
+  return messageList.nested_fields
+    .filter((field) => /^messageList\[\d+\]$/.test(field.field_name ?? ''))
+    .map((field) => {
+      const index = Number(field.field_name?.match(/\[(\d+)\]$/)?.[1] ?? -1)
+      const decodedPayload = payloadDecode.fields.find((candidate) => candidate.field_name?.startsWith(`messageList[${index}].payload (`))
+      const decodedName = decodedPayload?.field_name?.match(/^messageList\[\d+\]\.payload \((.+)\)$/)?.[1] ?? null
+      return {
+        messageId: numericProtobufField(field.nested_fields, 'messageId'),
+        requestMessageId: numericProtobufField(field.nested_fields, 'requestMessageId'),
+        messageType: numericProtobufField(field.nested_fields, 'messageType'),
+        messageName: decodedName,
+      }
+    })
+}
+
+function trafficPairTone(pairKey: string) {
+  let hash = 0
+  for (const character of pairKey) {
+    hash = (hash * 31 + character.charCodeAt(0)) | 0
+  }
+
+  return Math.abs(hash) % 5
+}
+
+function buildTrafficPairMap(rows: TrafficRow[]) {
+  const requests = new Map<string, TrafficRow>()
+  const pairs = new Map<string, TrafficPairInfo>()
+
+  rows.forEach((row) => {
+    if (row.kind !== 'websocket' || row.preview.direction !== 'Request') {
+      return
+    }
+
+    applicationMessageMetadata(row.preview.payload_decode).forEach((message) => {
+      if (message.messageId !== null) {
+        requests.set(`${row.preview.connection_id}:${message.messageId}`, row)
+      }
+    })
+  })
+
+  rows.forEach((row) => {
+    if (row.kind !== 'websocket' || row.preview.direction !== 'Response') {
+      return
+    }
+
+    applicationMessageMetadata(row.preview.payload_decode).forEach((message) => {
+      if (message.requestMessageId === null) {
+        return
+      }
+
+      const pairKey = `${row.preview.connection_id}:${message.requestMessageId}`
+      const request = requests.get(pairKey)
+      if (!request || trafficRowKey(request) === trafficRowKey(row)) {
+        return
+      }
+
+      const pair = {
+        messageId: message.requestMessageId,
+        tone: trafficPairTone(pairKey),
+      }
+      pairs.set(trafficRowKey(request), pair)
+      pairs.set(trafficRowKey(row), pair)
+    })
+  })
+
+  return pairs
+}
+
+function trafficPairForRow(row: TrafficRow) {
+  return currentTrafficPairs.get(trafficRowKey(row)) ?? null
+}
+
 function friendlyMessageName(messageName: string) {
   const shortName = shortMessageName(messageName)
   if (shortName.startsWith('StreamingActiveOrders')) {
@@ -1456,10 +1569,18 @@ function trafficRowName(row: TrafficRow) {
 
 function trafficRowDirection(row: TrafficRow) {
   if (row.kind === 'http') {
-    return row.exchange.status === null ? 'Request' : 'Request -> Response'
+    return row.exchange.status === null ? 'Request' : 'Request + response'
   }
 
-  return directionLabel(row.preview.direction)
+  if (row.preview.direction === 'Request') {
+    return 'Client -> server'
+  }
+
+  if (row.preview.direction === 'Response') {
+    return 'Server push'
+  }
+
+  return 'Internal'
 }
 
 function trafficRowSize(row: TrafficRow) {
@@ -1506,6 +1627,20 @@ function isStreamingPriceV4Row(row: TrafficRow) {
   return trafficRowMessageNames(row).some((name) => name.toLowerCase().includes('streamingpricev4'))
 }
 
+function isKeepAliveAckRow(row: TrafficRow) {
+  const names = trafficRowMessageNames(row).map((name) => name.toLowerCase())
+  if (names.some((name) => name.includes('streamingkeepaliveack'))) {
+    return true
+  }
+
+  if (row.kind !== 'http' || row.exchange.method?.toUpperCase() !== 'POST') {
+    return false
+  }
+
+  const path = row.exchange.path?.toLowerCase() ?? ''
+  return path.includes('keepaliveack') || names.some((name) => name.includes('keepaliveack'))
+}
+
 function trafficRowAnomalies(row: TrafficRow) {
   return row.kind === 'http' ? row.exchange.anomalies : []
 }
@@ -1517,6 +1652,10 @@ function filteredTrafficRows() {
 
   return trafficRows().filter((row) => {
     if (!streamingPriceFilter.checked && isStreamingPriceV4Row(row)) {
+      return false
+    }
+
+    if (!keepAliveAckFilter.checked && isKeepAliveAckRow(row)) {
       return false
     }
 
@@ -1777,9 +1916,11 @@ function updateSortHeaders() {
 
 function payloadLabel(payloadHint: PayloadHint) {
   const contentType = payloadHint.response_content_type ?? payloadHint.request_content_type ?? '-'
+  const normalizedContentType = contentType.toLowerCase().split(';', 1)[0].trim()
+  const visibleContentType = normalizedContentType === 'application/octet-stream' ? null : contentType
   return `
     <span class="payload-kind ${escapeHtml(payloadHint.likely_protocol)}">${escapeHtml(payloadHint.likely_protocol)}</span>
-    <span class="content-type">${escapeHtml(contentType)}</span>
+    ${visibleContentType ? `<span class="content-type">${escapeHtml(visibleContentType)}</span>` : ''}
   `
 }
 
@@ -2775,11 +2916,21 @@ streamingPriceFilter.addEventListener('change', () => {
   renderHeatmap()
 })
 
+keepAliveAckFilter.addEventListener('change', () => {
+  autoScrollExchanges = false
+  saveUiPreferences()
+  renderTrafficMessages()
+  renderSelectedTraffic()
+  renderTimeline()
+  renderHeatmap()
+})
+
 clearFiltersButton.addEventListener('click', () => {
   searchInput.value = ''
   protocolFilter.value = 'all'
   anomalyFilter.checked = false
   streamingPriceFilter.checked = true
+  keepAliveAckFilter.checked = true
   activeResourceFilters.clear()
   updateResourceFilterButtons()
   autoScrollExchanges = false

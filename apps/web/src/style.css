@@ -435,6 +435,38 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.packet-log-results {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.packet-log-result {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+}
+
+.packet-log-result strong,
+.packet-log-result small {
+  overflow-wrap: anywhere;
+}
+
+.packet-log-result strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.status-error {
+  color: var(--danger);
+}
+
 .schema-bundle-list {
   display: grid;
   gap: 8px;

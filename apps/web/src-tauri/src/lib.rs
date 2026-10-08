@@ -1141,6 +1141,31 @@ fn application_message_mappings_from_descriptor_set(
             })
             .flatten()
             .unwrap_or_default();
+        let api_type = file_fields.iter().find_map(|(field_number, value)| {
+            if *field_number != 8 {
+                return None;
+            }
+            let DescriptorWireValue::Bytes(options) = value else {
+                return None;
+            };
+            descriptor_wire_fields(options).ok()?.into_iter().find_map(
+                |(option_field_number, option_value)| {
+                    if option_field_number != 50004 {
+                        return None;
+                    }
+                    let DescriptorWireValue::Bytes(api_type) = option_value else {
+                        return None;
+                    };
+                    String::from_utf8(api_type).ok()
+                },
+            )
+        });
+        if api_type
+            .as_deref()
+            .is_some_and(|api_type| api_type != APPLICATION_API_TYPE)
+        {
+            continue;
+        }
         let ordinal = file_fields.iter().find_map(|(field_number, value)| {
             if *field_number != 8 {
                 return None;
@@ -1593,6 +1618,7 @@ fn decode_websocket_payload_with_mapping(
 }
 
 const APPLICATION_PACKET_MESSAGE: &str = "com.cmcmarkets.iphone.transport.protos.iPhonePacketProto";
+const APPLICATION_API_TYPE: &str = "NG_MOBILE";
 
 fn decode_application_packet_payload(
     bytes: &[u8],
@@ -3259,6 +3285,25 @@ mod tests {
             mappings.get(&(42, 2)),
             Some(&vec!["com.example.ExampleResponseV2Proto".to_owned()])
         );
+    }
+
+    #[test]
+    fn application_message_mappings_ignore_other_application_types() {
+        let mut options = length_delimited(50004, b"STOCKBROKING_WEB");
+        options.extend(varint(u64::from(50009u32) << 3));
+        options.extend(varint(84));
+
+        let mut file = length_delimited(2, b"com.example");
+        file.extend(length_delimited(8, &options));
+        file.extend(length_delimited(
+            4,
+            &length_delimited(1, b"ExampleResponseProto"),
+        ));
+
+        let descriptor_set = length_delimited(1, &file);
+        let mappings = application_message_mappings_from_descriptor_set(&descriptor_set).unwrap();
+
+        assert!(mappings.is_empty());
     }
 }
 

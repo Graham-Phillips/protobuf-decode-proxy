@@ -442,6 +442,7 @@ fn materialize_gzip_reader<R: Read>(reader: R, destination: &Path) -> Result<(),
     fs::rename(&temporary, destination).map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 fn inspect_records<R: Read>(mut reader: R) -> PacketLogStats {
     inspect_records_with_sink(&mut reader, "", None, None)
 }

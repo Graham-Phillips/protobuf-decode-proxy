@@ -3,6 +3,7 @@ param(
   [string]$SupportRoot = 'C:\Work2\GP\mobile-server-api\mobile-server-api\target\protos',
   [string]$ProtocPath = 'C:\Work2\GP\mobile-server-api\tools\protocol_buffers\protoc.exe',
   [string]$OutputPath = "$PSScriptRoot\..\mockdata\protos-client-event.pb",
+  [string[]]$RootFiles,
   [switch]$AllSources
 )
 
@@ -28,8 +29,14 @@ $outputDirectory = Split-Path -Parent $output
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
 
 $protoFiles = if ($AllSources) {
-  Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Filter '*.proto' |
-    ForEach-Object { $_.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/') }
+  @(
+    'com/cmcmarkets/iphone/transport/protos/iPhonePacketProtoBuf.proto'
+    Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Filter '*.proto' |
+      Where-Object { Select-String -LiteralPath $_.FullName -Pattern 'message_type_ordinal' -Quiet } |
+      ForEach-Object { $_.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/') }
+  ) | Sort-Object -Unique
+} elseif ($RootFiles.Count -gt 0) {
+  $RootFiles
 } else {
   @(
     'com/cmcmarkets/iphone/transport/protos/iPhonePacketProtoBuf.proto'

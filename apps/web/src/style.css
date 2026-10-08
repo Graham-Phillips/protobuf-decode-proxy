@@ -679,7 +679,7 @@ h3 {
 
 .exchange-table th,
 .exchange-table td {
-  height: 28px;
+  height: 24px;
   padding: 3px 7px;
   border-bottom: 1px solid var(--border);
   overflow: hidden;
@@ -738,24 +738,38 @@ h3 {
   border-left: 3px solid var(--pair-color, var(--accent));
 }
 
+.exchange-table tr.paired-row td {
+  background: var(--pair-surface, var(--surface));
+}
+
 .exchange-table tr.pair-tone-0 {
   --pair-color: #2f80ed;
+  --pair-surface: rgba(47, 128, 237, 0.08);
 }
 
 .exchange-table tr.pair-tone-1 {
   --pair-color: #27ae60;
+  --pair-surface: rgba(39, 174, 96, 0.08);
 }
 
 .exchange-table tr.pair-tone-2 {
   --pair-color: #d97706;
+  --pair-surface: rgba(217, 119, 6, 0.09);
 }
 
 .exchange-table tr.pair-tone-3 {
   --pair-color: #c241a5;
+  --pair-surface: rgba(194, 65, 165, 0.08);
 }
 
 .exchange-table tr.pair-tone-4 {
   --pair-color: #0f9f9a;
+  --pair-surface: rgba(15, 159, 154, 0.08);
+}
+
+.exchange-table tr.paired-row:hover td,
+.exchange-table tr.paired-row.selected td {
+  background: var(--accent-soft);
 }
 
 .pair-badge {

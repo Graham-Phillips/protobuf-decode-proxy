@@ -198,7 +198,7 @@ type TrafficRow =
   | { kind: 'http'; part: HttpTrafficPart; exchange: HttpExchange }
   | { kind: 'websocket'; preview: WebSocketMessagePreview }
 
-const TRAFFIC_ROW_HEIGHT = 28
+const TRAFFIC_ROW_HEIGHT = 24
 const TRAFFIC_ROW_OVERSCAN = 18
 
 const app = document.querySelector<HTMLDivElement>('#app')!
@@ -295,8 +295,8 @@ app.innerHTML = `
             <span>Show StreamingPriceV4</span>
           </label>
           <label class="check-row">
-            <input id="keepalive-ack-filter" type="checkbox">
-            <span>Show keep-alive ACKs</span>
+            <input id="keepalive-filter" type="checkbox">
+            <span>Show keep-alives</span>
           </label>
           <button id="analyse-selection" class="primary-button" type="button">Analyse Visible</button>
         </section>
@@ -384,9 +384,9 @@ app.innerHTML = `
           </div>
         </div>
 
-        <section class="decoded-message-panel" aria-label="Decoded message">
+        <section class="decoded-message-panel" aria-label="Decoded protobuf JSON">
           <div class="panel-heading">
-            <h2>Decoded Message</h2>
+            <h2>Decoded protobuf JSON</h2>
             <span id="selected-decoded-kind" class="small-value">No selection</span>
           </div>
           <div id="decoded-message-content" class="decoded-message-content">
@@ -698,7 +698,7 @@ const anomalyFilter = document.querySelector<HTMLInputElement>('#anomaly-filter'
 const errorsOnlyFilter = document.querySelector<HTMLInputElement>('#errors-only-filter')!
 const deadCallsFilter = document.querySelector<HTMLInputElement>('#dead-calls-filter')!
 const streamingPriceFilter = document.querySelector<HTMLInputElement>('#streaming-price-filter')!
-const keepAliveAckFilter = document.querySelector<HTMLInputElement>('#keepalive-ack-filter')!
+const keepAliveFilter = document.querySelector<HTMLInputElement>('#keepalive-filter')!
 const clearFiltersButton = document.querySelector<HTMLButtonElement>('#clear-filters')!
 const clearCaptureButton = document.querySelector<HTMLButtonElement>('#clear-capture')!
 const analyseSelectionButton = document.querySelector<HTMLButtonElement>('#analyse-selection')!
@@ -773,6 +773,8 @@ type UiPreferences = {
   errorsOnly?: boolean
   deadCallsOnly?: boolean
   showStreamingPriceV4?: boolean
+  showKeepAlives?: boolean
+  /** Retained so existing saved preferences migrate cleanly. */
   showKeepAliveAcks?: boolean
   resourceFilters?: ResourceFilter[]
   autoScroll?: boolean
@@ -798,7 +800,7 @@ function saveUiPreferences() {
       errorsOnly: errorsOnlyFilter.checked,
       deadCallsOnly: deadCallsFilter.checked,
       showStreamingPriceV4: streamingPriceFilter.checked,
-      showKeepAliveAcks: keepAliveAckFilter.checked,
+      showKeepAlives: keepAliveFilter.checked,
       resourceFilters: [...activeResourceFilters],
       autoScroll: autoScrollEnabled,
     } satisfies UiPreferences))
@@ -826,7 +828,7 @@ anomalyFilter.checked = savedUiPreferences.anomaliesOnly === true
 errorsOnlyFilter.checked = savedUiPreferences.errorsOnly === true
 deadCallsFilter.checked = savedUiPreferences.deadCallsOnly === true
 streamingPriceFilter.checked = savedUiPreferences.showStreamingPriceV4 !== false
-keepAliveAckFilter.checked = savedUiPreferences.showKeepAliveAcks === true
+keepAliveFilter.checked = savedUiPreferences.showKeepAlives ?? savedUiPreferences.showKeepAliveAcks === true
 activeResourceFilters = new Set((savedUiPreferences.resourceFilters ?? []).filter((filter) => filter !== 'all'))
 autoScrollEnabled = savedUiPreferences.autoScroll !== false
 autoScrollToggle.checked = autoScrollEnabled
@@ -1073,8 +1075,8 @@ function renderTrafficMessages() {
   summaryAnomalies.textContent = String(anomalies)
   summaryWebSockets.textContent = String(latestWebSocketPreviews.length)
   summaryFilters.textContent = activeResourceFilters.size === 0
-    ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${decodeFilter.value === 'all' ? '' : `, ${decodeFilter.value}`}${anomalyFilter.checked ? ', anomalies' : ''}${errorsOnlyFilter.checked ? ', errors' : ''}${deadCallsFilter.checked ? ', dead calls' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveAckFilter.checked ? '' : ', keep-alive ACKs hidden'}`
-    : `${resourceFilterSummary()}${decodeFilter.value === 'all' ? '' : `, ${decodeFilter.value}`}${anomalyFilter.checked ? ', anomalies' : ''}${errorsOnlyFilter.checked ? ', errors' : ''}${deadCallsFilter.checked ? ', dead calls' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveAckFilter.checked ? '' : ', keep-alive ACKs hidden'}`
+    ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${decodeFilter.value === 'all' ? '' : `, ${decodeFilter.value}`}${anomalyFilter.checked ? ', anomalies' : ''}${errorsOnlyFilter.checked ? ', errors' : ''}${deadCallsFilter.checked ? ', dead calls' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveFilter.checked ? '' : ', keep-alives hidden'}`
+    : `${resourceFilterSummary()}${decodeFilter.value === 'all' ? '' : `, ${decodeFilter.value}`}${anomalyFilter.checked ? ', anomalies' : ''}${errorsOnlyFilter.checked ? ', errors' : ''}${deadCallsFilter.checked ? ', dead calls' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveFilter.checked ? '' : ', keep-alives hidden'}`
   analyseSelectionButton.disabled = visibleRows.length === 0
 
   if (sortedRows.length === 0) {
@@ -1369,10 +1371,6 @@ function payloadDecodePanel(payloadDecode: PayloadDecode) {
 
   return `
     <div class="decode-preview">
-      <div class="panel-heading">
-        <h3>Decoded protobuf JSON</h3>
-        <span class="small-value">${messageJson.length} message${messageJson.length === 1 ? '' : 's'}</span>
-      </div>
       <div class="json-output-block">
         <div class="json-preview-heading">
           <strong>Decoded JSON</strong>
@@ -1882,18 +1880,18 @@ function isStreamingPriceV4Row(row: TrafficRow) {
   return trafficRowMessageNames(row).some((name) => name.toLowerCase().includes('streamingpricev4'))
 }
 
-function isKeepAliveAckRow(row: TrafficRow) {
+function isKeepAliveRow(row: TrafficRow) {
   const names = trafficRowMessageNames(row).map((name) => name.toLowerCase())
-  if (names.some((name) => name.includes('streamingkeepaliveack'))) {
+  if (names.some((name) => name.includes('keepalive'))) {
     return true
   }
 
-  if (row.kind !== 'http' || row.exchange.method?.toUpperCase() !== 'POST') {
+  if (row.kind !== 'http') {
     return false
   }
 
   const path = row.exchange.path?.toLowerCase() ?? ''
-  return path.includes('keepaliveack') || names.some((name) => name.includes('keepaliveack'))
+  return path.includes('keepalive')
 }
 
 function trafficRowAnomalies(row: TrafficRow) {
@@ -1947,7 +1945,7 @@ function filteredTrafficRows() {
       return false
     }
 
-    if (!keepAliveAckFilter.checked && isKeepAliveAckRow(row)) {
+    if (!keepAliveFilter.checked && isKeepAliveRow(row)) {
       return false
     }
 
@@ -3192,7 +3190,7 @@ loadDescriptorSetButton.addEventListener('click', async () => {
       hostMatchType,
       hostMatchValue,
       pathPrefix,
-      replaceUnscoped: false,
+      replaceUnscoped: hostMatchType === 'any',
     })
     renderProtoSchemaStatus(status)
     await refresh()
@@ -3291,7 +3289,6 @@ trafficMessages.addEventListener('click', (event) => {
   selectedWebSocketDecode = null
   selectedCopyStatus.textContent = ''
   autoScrollExchanges = false
-  trafficDetail.open = true
   renderTrafficMessages()
   renderSelectedTraffic()
 })
@@ -3383,7 +3380,7 @@ streamingPriceFilter.addEventListener('change', () => {
   renderHeatmap()
 })
 
-keepAliveAckFilter.addEventListener('change', () => {
+keepAliveFilter.addEventListener('change', () => {
   autoScrollExchanges = false
   saveUiPreferences()
   renderTrafficMessages()
@@ -3400,7 +3397,7 @@ clearFiltersButton.addEventListener('click', () => {
   errorsOnlyFilter.checked = false
   deadCallsFilter.checked = false
   streamingPriceFilter.checked = true
-  keepAliveAckFilter.checked = true
+  keepAliveFilter.checked = true
   activeResourceFilters.clear()
   updateResourceFilterButtons()
   autoScrollExchanges = false
@@ -3422,7 +3419,6 @@ exchangeTimeline.addEventListener('click', (event) => {
   selectedTrafficKey = `http:${exchangeId}:${exchange?.response_payload_decode ? 'response' : 'request'}`
   selectedCopyStatus.textContent = ''
   autoScrollExchanges = false
-  trafficDetail.open = true
   renderTrafficMessages()
   renderTimeline()
   renderSelectedTraffic()

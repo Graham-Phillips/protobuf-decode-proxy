@@ -188,6 +188,7 @@ type WebSocketProtoMapping = {
 type TrafficView = 'table' | 'timeline' | 'heatmap'
 type Workspace = 'traffic' | 'schemas' | 'runtime'
 type CaptureMode = 'live' | 'log'
+type DecodeFilter = 'all' | 'decoded' | 'undecoded'
 type SortKey = 'started_at' | 'name' | 'method' | 'host' | 'status' | 'type' | 'initiator' | 'size' | 'time' | 'decode' | 'anomalies'
 type SortDirection = 'asc' | 'desc'
 type ResourceFilter = 'all' | 'fetch' | 'document' | 'js' | 'css' | 'image' | 'font' | 'media' | 'ws' | 'protobuf' | 'json' | 'other'
@@ -266,9 +267,25 @@ app.innerHTML = `
               <option value="unknown">Unknown</option>
             </select>
           </label>
+          <label class="field">
+            <span>Decode state</span>
+            <select id="decode-filter">
+              <option value="all">All decode states</option>
+              <option value="decoded">Decoded only</option>
+              <option value="undecoded">Undecoded or partial</option>
+            </select>
+          </label>
           <label class="check-row">
             <input id="anomaly-filter" type="checkbox">
             <span>Anomalies only</span>
+          </label>
+          <label class="check-row">
+            <input id="errors-only-filter" type="checkbox">
+            <span>Errors only</span>
+          </label>
+          <label class="check-row">
+            <input id="dead-calls-filter" type="checkbox">
+            <span>Dead calls only</span>
           </label>
           <label class="check-row">
             <input id="streaming-price-filter" type="checkbox" checked>
@@ -673,7 +690,10 @@ const websocketMappingStatus = document.querySelector<HTMLElement>('#websocket-m
 const websocketMappings = document.querySelector<HTMLElement>('#websocket-mappings')!
 const searchInput = document.querySelector<HTMLInputElement>('#traffic-search')!
 const protocolFilter = document.querySelector<HTMLSelectElement>('#protocol-filter')!
+const decodeFilter = document.querySelector<HTMLSelectElement>('#decode-filter')!
 const anomalyFilter = document.querySelector<HTMLInputElement>('#anomaly-filter')!
+const errorsOnlyFilter = document.querySelector<HTMLInputElement>('#errors-only-filter')!
+const deadCallsFilter = document.querySelector<HTMLInputElement>('#dead-calls-filter')!
 const streamingPriceFilter = document.querySelector<HTMLInputElement>('#streaming-price-filter')!
 const keepAliveAckFilter = document.querySelector<HTMLInputElement>('#keepalive-ack-filter')!
 const clearFiltersButton = document.querySelector<HTMLButtonElement>('#clear-filters')!
@@ -745,7 +765,10 @@ type UiPreferences = {
   theme?: 'light' | 'dark'
   search?: string
   protocol?: string
+  decodeState?: DecodeFilter
   anomaliesOnly?: boolean
+  errorsOnly?: boolean
+  deadCallsOnly?: boolean
   showStreamingPriceV4?: boolean
   showKeepAliveAcks?: boolean
   resourceFilters?: ResourceFilter[]
@@ -767,7 +790,10 @@ function saveUiPreferences() {
       theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
       search: searchInput.value,
       protocol: protocolFilter.value,
+      decodeState: decodeFilter.value as DecodeFilter,
       anomaliesOnly: anomalyFilter.checked,
+      errorsOnly: errorsOnlyFilter.checked,
+      deadCallsOnly: deadCallsFilter.checked,
       showStreamingPriceV4: streamingPriceFilter.checked,
       showKeepAliveAcks: keepAliveAckFilter.checked,
       resourceFilters: [...activeResourceFilters],
@@ -790,7 +816,12 @@ searchInput.value = savedUiPreferences.search ?? ''
 protocolFilter.value = savedUiPreferences.protocol && [...protocolFilter.options].some((option) => option.value === savedUiPreferences.protocol)
   ? savedUiPreferences.protocol
   : 'all'
+decodeFilter.value = savedUiPreferences.decodeState && [...decodeFilter.options].some((option) => option.value === savedUiPreferences.decodeState)
+  ? savedUiPreferences.decodeState
+  : 'all'
 anomalyFilter.checked = savedUiPreferences.anomaliesOnly === true
+errorsOnlyFilter.checked = savedUiPreferences.errorsOnly === true
+deadCallsFilter.checked = savedUiPreferences.deadCallsOnly === true
 streamingPriceFilter.checked = savedUiPreferences.showStreamingPriceV4 !== false
 keepAliveAckFilter.checked = savedUiPreferences.showKeepAliveAcks === true
 activeResourceFilters = new Set((savedUiPreferences.resourceFilters ?? []).filter((filter) => filter !== 'all'))
@@ -932,6 +963,7 @@ function renderEvents(summary: ProxyEventSummary) {
   }
   scrollExchangeTableIfNeeded(shouldAutoScroll)
 
+  const diagnosticsScrollTop = eventsList.scrollTop
   eventsList.innerHTML = summary.events
     .slice(-12)
     .reverse()
@@ -953,6 +985,7 @@ function renderEvents(summary: ProxyEventSummary) {
       `
     })
     .join('')
+  eventsList.scrollTop = diagnosticsScrollTop
 }
 
 function renderSelectedWebSocketPreview() {
@@ -1024,7 +1057,7 @@ function renderTrafficMessages() {
   const shouldPreserveScroll = !autoScrollExchanges
   const decodedRows = allRows.filter((row) => {
     const decode = trafficRowDecode(row)
-    return decode.schema_message !== null && decode.fields.length > 0
+    return payloadDecodeState(decode) === 'decoded'
   }).length
   const anomalies = allRows.reduce((count, row) => count + trafficRowAnomalies(row).length, 0)
   const scrollStatus = autoScrollEnabled
@@ -1038,8 +1071,8 @@ function renderTrafficMessages() {
   summaryAnomalies.textContent = String(anomalies)
   summaryWebSockets.textContent = String(latestWebSocketPreviews.length)
   summaryFilters.textContent = activeResourceFilters.size === 0
-    ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${anomalyFilter.checked ? ', anomalies' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveAckFilter.checked ? '' : ', keep-alive ACKs hidden'}`
-    : `${resourceFilterSummary()}${anomalyFilter.checked ? ', anomalies' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveAckFilter.checked ? '' : ', keep-alive ACKs hidden'}`
+    ? `${protocolFilter.value === 'all' ? 'All payload types' : protocolFilter.value}${decodeFilter.value === 'all' ? '' : `, ${decodeFilter.value}`}${anomalyFilter.checked ? ', anomalies' : ''}${errorsOnlyFilter.checked ? ', errors' : ''}${deadCallsFilter.checked ? ', dead calls' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveAckFilter.checked ? '' : ', keep-alive ACKs hidden'}`
+    : `${resourceFilterSummary()}${decodeFilter.value === 'all' ? '' : `, ${decodeFilter.value}`}${anomalyFilter.checked ? ', anomalies' : ''}${errorsOnlyFilter.checked ? ', errors' : ''}${deadCallsFilter.checked ? ', dead calls' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveAckFilter.checked ? '' : ', keep-alive ACKs hidden'}`
   analyseSelectionButton.disabled = visibleRows.length === 0
 
   if (visibleWindow.length === 0) {
@@ -1848,9 +1881,46 @@ function trafficRowAnomalies(row: TrafficRow) {
   return row.kind === 'http' && row.part === 'response' ? row.exchange.anomalies : []
 }
 
+type DecodeState = 'decoded' | 'partial' | 'undecoded' | 'error'
+
+function payloadDecodeState(payloadDecode: PayloadDecode): DecodeState {
+  const status = payloadDecode.status.toLowerCase()
+  if (/(failed|error|malformed|invalid)/.test(status)) {
+    return 'error'
+  }
+
+  if (status.includes('not decoded') || status.includes('no descriptor') || status.includes('wire preview')) {
+    return 'partial'
+  }
+
+  if (applicationMessageEntries(payloadDecode).length > 0 || payloadDecode.schema_message !== null || payloadDecode.json_previews.length > 0) {
+    return 'decoded'
+  }
+
+  return 'undecoded'
+}
+
+function trafficRowHasError(row: TrafficRow) {
+  const decodeState = payloadDecodeState(trafficRowDecode(row))
+  if (decodeState === 'error') {
+    return true
+  }
+
+  if (row.kind === 'http' && row.part === 'response' && row.exchange.status !== null && row.exchange.status >= 400) {
+    return true
+  }
+
+  return trafficRowAnomalies(row).some((anomaly) => anomaly.kind === 'http_4xx' || anomaly.kind === 'http_5xx')
+}
+
+function trafficRowIsDeadCall(row: TrafficRow) {
+  return row.kind === 'http' && row.part === 'request' && row.exchange.response_payload_decode === null
+}
+
 function filteredTrafficRows() {
   const search = searchInput.value.trim().toLowerCase()
   const protocol = protocolFilter.value
+  const selectedDecodeFilter = decodeFilter.value as DecodeFilter
   const anomaliesOnly = anomalyFilter.checked
 
   return trafficRows().filter((row) => {
@@ -1872,7 +1942,23 @@ function filteredTrafficRows() {
       return false
     }
 
+    const decodeState = payloadDecodeState(trafficRowDecode(row))
+    if (selectedDecodeFilter === 'decoded' && decodeState !== 'decoded') {
+      return false
+    }
+    if (selectedDecodeFilter === 'undecoded' && decodeState === 'decoded') {
+      return false
+    }
+
     if (anomaliesOnly && anomalies.length === 0) {
+      return false
+    }
+
+    if (errorsOnlyFilter.checked && !trafficRowHasError(row)) {
+      return false
+    }
+
+    if (deadCallsFilter.checked && !trafficRowIsDeadCall(row)) {
       return false
     }
 
@@ -2541,6 +2627,7 @@ function trafficSortValue(row: TrafficRow, key: SortKey): string | number {
 }
 
 function decodeLabel(payloadDecode: PayloadDecode) {
+  const state = payloadDecodeState(payloadDecode)
   const applicationNames = applicationMessageEntries(payloadDecode)
     .map((message) => friendlyMessageName(message.messageName))
   const messageNames = [...new Set(applicationNames.length > 0
@@ -2549,14 +2636,23 @@ function decodeLabel(payloadDecode: PayloadDecode) {
       ? [friendlyMessageName(payloadDecode.schema_message)]
       : [])]
 
-  if (messageNames.length === 0) {
-    return '<span class="muted">Undecoded</span>'
+  if (state === 'error') {
+    return `<span class="decode-state error" title="${escapeHtml(payloadDecode.status)}">Decode error</span>`
+  }
+
+  if (state === 'decoded' && messageNames.length === 0) {
+    return `<span class="decode-state decoded" title="${escapeHtml(payloadDecode.status)}">Decoded payload</span>`
+  }
+
+  if (state === 'undecoded' || messageNames.length === 0) {
+    return `<span class="decode-state unknown" title="${escapeHtml(payloadDecode.status)}">Undecoded</span>`
   }
 
   const visibleNames = messageNames.slice(0, 2)
   const remainingCount = messageNames.length - visibleNames.length
   const suffix = remainingCount > 0 ? ` +${remainingCount} more` : ''
-  return `<strong class="decode-message" title="${escapeHtml(messageNames.join(', '))}">${escapeHtml(visibleNames.join(', '))}${suffix}</strong>`
+  const label = state === 'partial' ? `Partial: ${visibleNames.join(', ')}` : visibleNames.join(', ')
+  return `<strong class="decode-message ${state}" title="${escapeHtml(payloadDecode.status)}">${escapeHtml(label)}${suffix}</strong>`
 }
 
 function hostWithoutPort(authority: string | null) {
@@ -3194,6 +3290,15 @@ protocolFilter.addEventListener('change', () => {
   renderHeatmap()
 })
 
+decodeFilter.addEventListener('change', () => {
+  autoScrollExchanges = false
+  saveUiPreferences()
+  renderTrafficMessages()
+  renderSelectedTraffic()
+  renderTimeline()
+  renderHeatmap()
+})
+
 resourceFilterButtons.forEach((button) => {
   button.addEventListener('click', () => {
     const filter = button.dataset.resourceFilter as ResourceFilter | undefined
@@ -3227,6 +3332,24 @@ anomalyFilter.addEventListener('change', () => {
   renderHeatmap()
 })
 
+errorsOnlyFilter.addEventListener('change', () => {
+  autoScrollExchanges = false
+  saveUiPreferences()
+  renderTrafficMessages()
+  renderSelectedTraffic()
+  renderTimeline()
+  renderHeatmap()
+})
+
+deadCallsFilter.addEventListener('change', () => {
+  autoScrollExchanges = false
+  saveUiPreferences()
+  renderTrafficMessages()
+  renderSelectedTraffic()
+  renderTimeline()
+  renderHeatmap()
+})
+
 streamingPriceFilter.addEventListener('change', () => {
   autoScrollExchanges = false
   saveUiPreferences()
@@ -3248,7 +3371,10 @@ keepAliveAckFilter.addEventListener('change', () => {
 clearFiltersButton.addEventListener('click', () => {
   searchInput.value = ''
   protocolFilter.value = 'all'
+  decodeFilter.value = 'all'
   anomalyFilter.checked = false
+  errorsOnlyFilter.checked = false
+  deadCallsFilter.checked = false
   streamingPriceFilter.checked = true
   keepAliveAckFilter.checked = true
   activeResourceFilters.clear()

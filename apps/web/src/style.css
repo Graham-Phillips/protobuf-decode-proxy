@@ -1434,6 +1434,28 @@ h3 {
   font-size: 14px;
 }
 
+.events {
+  max-height: 300px;
+  overflow: auto;
+}
+
+.decode-state {
+  font-weight: 800;
+}
+
+.decode-state.decoded {
+  color: var(--ok);
+}
+
+.decode-state.unknown,
+.decode-message.partial {
+  color: var(--warning);
+}
+
+.decode-state.error {
+  color: var(--danger);
+}
+
 @media (max-width: 1080px) {
   .topbar,
   .workspace {

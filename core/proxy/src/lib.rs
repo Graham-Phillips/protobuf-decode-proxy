@@ -8,6 +8,7 @@ pub use event::{
 };
 pub use server::{
     generate_proxy_ca, start_proxy, start_proxy_on_default_addr,
-    start_proxy_on_default_addr_with_ca, start_proxy_with_capture_and_upstream_root, ProxyCa,
-    ProxyError, ProxyHandle, DEFAULT_PROXY_ADDR,
+    start_proxy_on_default_addr_with_ca, start_proxy_on_ephemeral_addr_with_ca,
+    start_proxy_with_capture_and_upstream_root, ProxyCa, ProxyError, ProxyHandle,
+    DEFAULT_PROXY_ADDR,
 };

@@ -21,6 +21,9 @@ pub struct PacketLogImportReport {
     pub cache_directory: String,
     pub sources: Vec<PacketLogSourceReport>,
     pub errors: Vec<String>,
+    pub records_loaded: u64,
+    pub records_skipped: u64,
+    pub record_limit: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +45,7 @@ pub struct PacketLogSourceReport {
     pub format: String,
     pub materialized_dat: Option<String>,
     pub record_count: u64,
+    pub records_skipped: u64,
     pub total_payload_bytes: u64,
     pub first_timestamp_unix_ms: Option<u64>,
     pub last_timestamp_unix_ms: Option<u64>,
@@ -52,6 +56,7 @@ pub struct PacketLogSourceReport {
 #[derive(Default)]
 struct PacketLogStats {
     record_count: u64,
+    records_skipped: u64,
     total_payload_bytes: u64,
     first_timestamp_unix_ms: Option<u64>,
     last_timestamp_unix_ms: Option<u64>,
@@ -82,12 +87,16 @@ pub fn inspect_sources(
     app: &AppHandle,
     paths: Vec<String>,
 ) -> Result<PacketLogImportReport, String> {
-    Ok(process_sources(app, paths, None)?.report)
+    Ok(process_sources(app, paths, None, None)?.report)
 }
 
-pub fn import_sources(app: &AppHandle, paths: Vec<String>) -> Result<PacketLogImport, String> {
+pub fn import_sources(
+    app: &AppHandle,
+    paths: Vec<String>,
+    max_records: usize,
+) -> Result<PacketLogImport, String> {
     let mut records = Vec::new();
-    let mut imported = process_sources(app, paths, Some(&mut records))?;
+    let mut imported = process_sources(app, paths, Some(&mut records), Some(max_records))?;
     imported.records = records;
     Ok(imported)
 }
@@ -96,6 +105,7 @@ fn process_sources(
     app: &AppHandle,
     paths: Vec<String>,
     mut record_sink: Option<&mut Vec<PacketLogRecord>>,
+    max_records: Option<usize>,
 ) -> Result<PacketLogImport, String> {
     let cache_directory = cache_directory(app)?;
     fs::create_dir_all(&cache_directory)
@@ -105,6 +115,9 @@ fn process_sources(
         cache_directory: cache_directory.to_string_lossy().into_owned(),
         sources: Vec::new(),
         errors: Vec::new(),
+        records_loaded: 0,
+        records_skipped: 0,
+        record_limit: max_records.map(|limit| limit as u64),
     };
 
     if paths.is_empty() {
@@ -132,10 +145,18 @@ fn process_sources(
             &path,
             &mut report,
             record_sink.as_mut().map(|sink| &mut **sink),
+            max_records,
         ) {
             report.errors.push(format!("{}: {error}", path.display()));
         }
     }
+
+    report.records_loaded = record_sink.as_ref().map_or(0, |sink| sink.len() as u64);
+    report.records_skipped = report
+        .sources
+        .iter()
+        .map(|source| source.records_skipped)
+        .sum();
 
     Ok(PacketLogImport {
         report,
@@ -148,6 +169,7 @@ fn inspect_path(
     path: &Path,
     report: &mut PacketLogImportReport,
     record_sink: Option<&mut Vec<PacketLogRecord>>,
+    max_records: Option<usize>,
 ) -> Result<(), String> {
     let format = detect_file_format(path)?;
     match format {
@@ -157,7 +179,7 @@ fn inspect_path(
                 path.to_string_lossy().into_owned(),
                 SourceFormat::Dat,
                 None,
-                inspect_records_with_sink(file, &path.to_string_lossy(), record_sink),
+                inspect_records_with_sink(file, &path.to_string_lossy(), record_sink, max_records),
             ));
         }
         SourceFormat::Gzip => {
@@ -168,7 +190,12 @@ fn inspect_path(
                     path.to_string_lossy().into_owned(),
                     SourceFormat::Dat,
                     None,
-                    inspect_records_with_sink(file, &path.to_string_lossy(), record_sink),
+                    inspect_records_with_sink(
+                        file,
+                        &path.to_string_lossy(),
+                        record_sink,
+                        max_records,
+                    ),
                 ));
                 return Ok(());
             }
@@ -181,7 +208,7 @@ fn inspect_path(
                 path.to_string_lossy().into_owned(),
                 SourceFormat::Gzip,
                 Some(cache_path.to_string_lossy().into_owned()),
-                inspect_records_with_sink(file, &path.to_string_lossy(), record_sink),
+                inspect_records_with_sink(file, &path.to_string_lossy(), record_sink, max_records),
             ));
         }
         SourceFormat::Zip => {
@@ -193,6 +220,7 @@ fn inspect_path(
                 0,
                 report,
                 record_sink,
+                max_records,
             )?;
         }
         SourceFormat::Unknown => {
@@ -210,6 +238,7 @@ fn inspect_zip<R: Read + Seek>(
     depth: usize,
     report: &mut PacketLogImportReport,
     mut record_sink: Option<&mut Vec<PacketLogRecord>>,
+    max_records: Option<usize>,
 ) -> Result<(), String> {
     let entry_names = (0..archive.len())
         .filter_map(|index| {
@@ -250,6 +279,7 @@ fn inspect_zip<R: Read + Seek>(
                         reader,
                         &source,
                         record_sink.as_mut().map(|sink| &mut **sink),
+                        max_records,
                     ),
                 ));
             }
@@ -271,6 +301,7 @@ fn inspect_zip<R: Read + Seek>(
                         file,
                         &source,
                         record_sink.as_mut().map(|sink| &mut **sink),
+                        max_records,
                     ),
                 ));
             }
@@ -303,6 +334,7 @@ fn inspect_zip<R: Read + Seek>(
                     depth + 1,
                     report,
                     record_sink.as_mut().map(|sink| &mut **sink),
+                    max_records,
                 )?;
             }
             SourceFormat::Unknown => {
@@ -411,13 +443,14 @@ fn materialize_gzip_reader<R: Read>(reader: R, destination: &Path) -> Result<(),
 }
 
 fn inspect_records<R: Read>(mut reader: R) -> PacketLogStats {
-    inspect_records_with_sink(&mut reader, "", None)
+    inspect_records_with_sink(&mut reader, "", None, None)
 }
 
 fn inspect_records_with_sink<R: Read>(
     mut reader: R,
     source: &str,
     mut record_sink: Option<&mut Vec<PacketLogRecord>>,
+    max_records: Option<usize>,
 ) -> PacketLogStats {
     let mut stats = PacketLogStats::default();
     let mut length_bytes = [0_u8; 4];
@@ -463,7 +496,12 @@ fn inspect_records_with_sink<R: Read>(
         stats.record_count += 1;
         stats.total_payload_bytes += u64::from(length - 12);
 
-        if let Some(sink) = record_sink.as_mut() {
+        let retain_record = record_sink
+            .as_ref()
+            .is_some_and(|sink| max_records.map_or(true, |limit| sink.len() < limit));
+
+        if retain_record {
+            let sink = record_sink.as_mut().expect("retain_record requires a sink");
             let mut payload = vec![0_u8; (length - 12) as usize];
             if let Err(error) = reader.read_exact(&mut payload) {
                 stats.malformed = true;
@@ -477,6 +515,9 @@ fn inspect_records_with_sink<R: Read>(
                 payload,
             });
         } else {
+            if record_sink.is_some() {
+                stats.records_skipped += 1;
+            }
             let mut remaining = u64::from(length - 12);
             while remaining > 0 {
                 let requested = remaining.min(discard_buffer.len() as u64) as usize;
@@ -505,6 +546,7 @@ fn source_report(
         format: format.as_str().to_owned(),
         materialized_dat,
         record_count: stats.record_count,
+        records_skipped: stats.records_skipped,
         total_payload_bytes: stats.total_payload_bytes,
         first_timestamp_unix_ms: stats.first_timestamp_unix_ms,
         last_timestamp_unix_ms: stats.last_timestamp_unix_ms,
@@ -522,7 +564,7 @@ fn cache_directory(app: &AppHandle) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::inspect_records;
+    use super::{inspect_records, inspect_records_with_sink};
     use std::io::Cursor;
 
     #[test]
@@ -552,6 +594,27 @@ mod tests {
         assert_eq!(stats.record_count, 1);
         assert!(stats.malformed);
         assert!(stats.warning.is_some());
+    }
+
+    #[test]
+    fn bounds_retained_records_but_scans_the_stream() {
+        let mut bytes = Vec::new();
+        append_record(&mut bytes, 1_700_000_000_000, b"first");
+        append_record(&mut bytes, 1_700_000_001_000, b"second");
+        append_record(&mut bytes, 1_700_000_002_000, b"third");
+
+        let mut records = Vec::new();
+        let stats = inspect_records_with_sink(
+            Cursor::new(bytes),
+            "example.dat",
+            Some(&mut records),
+            Some(2),
+        );
+
+        assert_eq!(stats.record_count, 3);
+        assert_eq!(stats.records_skipped, 1);
+        assert_eq!(records.len(), 2);
+        assert!(!stats.malformed);
     }
 
     fn append_record(bytes: &mut Vec<u8>, timestamp: u64, payload: &[u8]) {

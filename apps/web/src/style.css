@@ -247,6 +247,48 @@ h3 {
   font-size: 12px;
 }
 
+.file-picker-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.file-picker-button input {
+  min-width: 0;
+  max-width: 58%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.packet-log-drop {
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.packet-log-drop.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
 .top-chip[data-state="running"] {
   color: var(--ok);
 }
@@ -1233,6 +1275,10 @@ h3 {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
+}
+
+.detail-grid .detail-wide {
+  grid-column: 1 / -1;
 }
 
 .detail-grid dt {

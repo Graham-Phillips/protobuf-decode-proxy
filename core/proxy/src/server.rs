@@ -109,6 +109,11 @@ pub async fn start_proxy_on_default_addr_with_ca(ca: ProxyCa) -> Result<ProxyHan
     start_proxy_with_capture_on_ca(capture, DEFAULT_PROXY_ADDR, ca).await
 }
 
+pub async fn start_proxy_on_ephemeral_addr_with_ca(ca: ProxyCa) -> Result<ProxyHandle, ProxyError> {
+    let capture = InMemoryCapture::new();
+    start_proxy_with_capture_on_ca(capture, "127.0.0.1:0", ca).await
+}
+
 pub async fn start_proxy_with_capture(capture: InMemoryCapture) -> Result<ProxyHandle, ProxyError> {
     start_proxy_with_capture_on(capture, "127.0.0.1:0").await
 }

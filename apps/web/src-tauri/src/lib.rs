@@ -9,8 +9,9 @@ use std::{
 
 use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, ReflectMessage, Value};
 use protobuf_decoder_proxy::{
-    generate_proxy_ca, start_proxy_on_default_addr_with_ca, BodyCapture, Direction, Protocol,
-    ProxyCa, ProxyEvent, ProxyHandle, WebSocketEventKind, WebSocketMessageKind,
+    generate_proxy_ca, start_proxy_on_default_addr_with_ca, start_proxy_on_ephemeral_addr_with_ca,
+    BodyCapture, Direction, Protocol, ProxyCa, ProxyError, ProxyEvent, ProxyHandle,
+    WebSocketEventKind, WebSocketMessageKind,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -66,6 +67,8 @@ struct HttpExchange {
     server_time: Option<String>,
     request_body_len: Option<u64>,
     response_body_len: Option<u64>,
+    request_headers: BTreeMap<String, String>,
+    response_headers: BTreeMap<String, String>,
     payload_hint: PayloadHint,
     request_payload_decode: PayloadDecode,
     response_payload_decode: Option<PayloadDecode>,
@@ -388,9 +391,16 @@ async fn start_proxy_service(
     }
 
     let (ca, ca_status) = load_or_create_persistent_ca(&app)?;
-    let handle = start_proxy_on_default_addr_with_ca(ca)
-        .await
-        .map_err(|error| error.to_string())?;
+    let handle = match start_proxy_with_port_fallback(ca).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            *state
+                .startup_error
+                .lock()
+                .map_err(|lock_error| lock_error.to_string())? = Some(error.clone());
+            return Err(error);
+        }
+    };
     log::info!("Protobuf Decoder proxy started at {}", handle.addr());
 
     {
@@ -509,6 +519,25 @@ async fn proxy_events(state: tauri::State<'_, ProxyState>) -> Result<ProxyEventS
         websocket_message_previews,
         events,
     })
+}
+
+async fn start_proxy_with_port_fallback(ca: ProxyCa) -> Result<ProxyHandle, String> {
+    match start_proxy_on_default_addr_with_ca(ca.clone()).await {
+        Ok(handle) => Ok(handle),
+        Err(ProxyError::Bind(default_error)) => {
+            log::warn!(
+                "Default proxy listener could not bind ({default_error}); trying an ephemeral local port"
+            );
+            start_proxy_on_ephemeral_addr_with_ca(ca)
+                .await
+                .map_err(|fallback_error| {
+                    format!(
+                        "failed to bind proxy listener on the default port ({default_error}); fallback port also failed: {fallback_error}"
+                    )
+                })
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn normalize_packet_log_payload(payload: &[u8]) -> &[u8] {
@@ -1004,7 +1033,7 @@ fn load_persisted_websocket_mappings(
 }
 
 #[tauri::command]
-fn load_proto_descriptor_set(
+async fn load_proto_descriptor_set(
     path: String,
     state: tauri::State<'_, ProxyState>,
 ) -> Result<ProtoSchemaStatus, String> {
@@ -1017,10 +1046,11 @@ fn load_proto_descriptor_set(
         true,
         state,
     )
+    .await
 }
 
 #[tauri::command]
-fn load_proto_descriptor_bundle(
+async fn load_proto_descriptor_bundle(
     name: String,
     path: String,
     host_match_type: String,
@@ -1029,6 +1059,8 @@ fn load_proto_descriptor_bundle(
     replace_unscoped: bool,
     state: tauri::State<'_, ProxyState>,
 ) -> Result<ProtoSchemaStatus, String> {
+    stop_proxy_if_running(&state).await?;
+
     let bytes = fs::read(&path)
         .map_err(|error| format!("failed to read protobuf descriptor set: {error}"))?;
     let pool = DescriptorPool::decode(bytes.as_slice())
@@ -2042,6 +2074,11 @@ impl HttpExchangeBuilder {
             server_time,
             request_body_len: request.body_len_hint,
             response_body_len,
+            request_headers: request.headers.clone(),
+            response_headers: response
+                .as_ref()
+                .map(|event| event.headers.clone())
+                .unwrap_or_default(),
             payload_hint,
             request_payload_decode,
             response_payload_decode,
@@ -3020,6 +3057,10 @@ fn detect_http_anomalies(
 
 #[tauri::command]
 async fn stop_proxy(state: tauri::State<'_, ProxyState>) -> Result<(), String> {
+    stop_proxy_if_running(&state).await
+}
+
+async fn stop_proxy_if_running(state: &tauri::State<'_, ProxyState>) -> Result<(), String> {
     let handle = {
         let mut handle = state.handle.lock().map_err(|error| error.to_string())?;
         handle.take()
@@ -3045,8 +3086,11 @@ fn import_packet_log_sources(
     app: tauri::AppHandle,
     state: tauri::State<'_, ProxyState>,
     paths: Vec<String>,
+    max_records: u64,
 ) -> Result<PacketLogImportResult, String> {
-    let imported = packet_log::import_sources(&app, paths)?;
+    let max_records = usize::try_from(max_records.clamp(100, 100_000))
+        .map_err(|error| format!("invalid packet-log record limit: {error}"))?;
+    let imported = packet_log::import_sources(&app, paths, max_records)?;
     let schemas = state
         .proto_schemas
         .lock()
@@ -3085,9 +3129,11 @@ pub fn run() {
             }
 
             match load_or_create_persistent_ca(app.handle()).and_then(|(ca, ca_status)| {
-                tauri::async_runtime::block_on(start_proxy_on_default_addr_with_ca(ca))
-                    .map(|handle| (handle, ca_status))
-                    .map_err(|error| error.to_string())
+                tauri::async_runtime::block_on(async move {
+                    start_proxy_with_port_fallback(ca)
+                        .await
+                        .map(|handle| (handle, ca_status))
+                })
             }) {
                 Ok((handle, ca_status)) => {
                     log::info!("Protobuf Decoder proxy started at {}", handle.addr());

@@ -1,5 +1,6 @@
 import './style.css'
 import { invoke } from '@tauri-apps/api/core'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 
 type ProxyStatus = {
   running: boolean
@@ -54,6 +55,8 @@ type HttpExchange = {
   server_time: string | null
   request_body_len: number | null
   response_body_len: number | null
+  request_headers: Record<string, string>
+  response_headers: Record<string, string>
   payload_hint: PayloadHint
   request_payload_decode: PayloadDecode
   response_payload_decode: PayloadDecode | null
@@ -142,6 +145,9 @@ type PacketLogImportReport = {
   cache_directory: string
   sources: PacketLogSourceReport[]
   errors: string[]
+  records_loaded: number
+  records_skipped: number
+  record_limit: number | null
 }
 
 type PacketLogImportResult = {
@@ -155,6 +161,7 @@ type PacketLogSourceReport = {
   materialized_dat: string | null
   record_count: number
   total_payload_bytes: number
+  records_skipped: number
   first_timestamp_unix_ms: number | null
   last_timestamp_unix_ms: number | null
   malformed: boolean
@@ -229,7 +236,7 @@ app.innerHTML = `
           </div>
           <label class="field">
             <span>Search</span>
-            <input id="traffic-search" type="search" placeholder="Host, path, method, status">
+            <input id="traffic-search" type="search" placeholder="Names, fields, values, headers, paths">
           </label>
           <div class="field">
             <span>Resource kind</span>
@@ -282,6 +289,17 @@ app.innerHTML = `
             <span>File paths</span>
             <textarea id="packet-log-paths" rows="3" placeholder="One path per line"></textarea>
           </label>
+          <label class="field">
+            <span>Maximum records to load</span>
+            <input id="packet-log-limit" type="number" min="100" max="100000" step="100" value="10000">
+          </label>
+          <label class="file-picker-button">
+            <span>Choose packet logs</span>
+            <input id="packet-log-files" type="file" multiple accept=".dat,.gz,.zip">
+          </label>
+          <div id="packet-log-drop" class="packet-log-drop" role="button" tabindex="0">
+            Drop DAT, GZ, or ZIP files here
+          </div>
           <button id="inspect-packet-logs" class="primary-button" type="button">Open in Traffic</button>
           <p id="packet-log-status" class="status-message" role="status" aria-live="polite">No packet-log import yet.</p>
           <div id="packet-log-results" class="packet-log-results"></div>
@@ -295,6 +313,7 @@ app.innerHTML = `
             <p id="traffic-summary">Waiting for traffic. Oldest exchanges appear first.</p>
           </div>
           <div class="workbench-actions">
+            <button id="toggle-proxy" class="primary-button" type="button">Start</button>
             <div class="capture-mode-switch" role="group" aria-label="Traffic source">
               <span class="small-value">Source</span>
               <button class="mode-button active" type="button" data-capture-mode="live" aria-pressed="true">Live proxy</button>
@@ -536,10 +555,10 @@ app.innerHTML = `
         <section class="tool-panel">
           <div class="panel-heading">
             <h2>Proxy Runtime</h2>
-            <button id="toggle-proxy" type="button">Stop</button>
+            <span id="runtime-proxy-state" class="small-value">Starting</span>
           </div>
           <dl class="counts">
-            <div><dt>Mode</dt><dd>Passthrough</dd></div>
+            <div><dt>Mode</dt><dd id="proxy-mode">Passthrough</dd></div>
             <div><dt>Address</dt><dd id="proxy-address">-</dd></div>
             <div><dt>Captured events</dt><dd id="event-total">0</dd></div>
             <div><dt>CA</dt><dd id="ca-storage">-</dd></div>
@@ -597,6 +616,8 @@ app.innerHTML = `
 const proxyState = document.querySelector<HTMLElement>('#proxy-state')!
 const themeToggle = document.querySelector<HTMLButtonElement>('#theme-toggle')!
 const proxyAddress = document.querySelector<HTMLElement>('#proxy-address')!
+const runtimeProxyState = document.querySelector<HTMLElement>('#runtime-proxy-state')!
+const proxyMode = document.querySelector<HTMLElement>('#proxy-mode')!
 const proxyCa = document.querySelector<HTMLElement>('#proxy-ca')!
 const caStorage = document.querySelector<HTMLElement>('#ca-storage')!
 const eventTotal = document.querySelector<HTMLElement>('#event-total')!
@@ -659,6 +680,9 @@ const clearFiltersButton = document.querySelector<HTMLButtonElement>('#clear-fil
 const clearCaptureButton = document.querySelector<HTMLButtonElement>('#clear-capture')!
 const analyseSelectionButton = document.querySelector<HTMLButtonElement>('#analyse-selection')!
 const packetLogPaths = document.querySelector<HTMLTextAreaElement>('#packet-log-paths')!
+const packetLogLimit = document.querySelector<HTMLInputElement>('#packet-log-limit')!
+const packetLogFiles = document.querySelector<HTMLInputElement>('#packet-log-files')!
+const packetLogDrop = document.querySelector<HTMLElement>('#packet-log-drop')!
 const inspectPacketLogsButton = document.querySelector<HTMLButtonElement>('#inspect-packet-logs')!
 const packetLogStatus = document.querySelector<HTMLElement>('#packet-log-status')!
 const packetLogResults = document.querySelector<HTMLElement>('#packet-log-results')!
@@ -695,12 +719,15 @@ let captureMode: CaptureMode = 'live'
 let latestSchemaStatus: ProtoSchemaStatus | null = null
 let latestSchemaBundles: ProtoSchemaStatus[] = []
 let latestWebSocketMappings: WebSocketProtoMapping[] = []
+let packetLogImportInFlight = false
 let selectedExchangeId: string | null = null
 let selectedWebSocketPreviewId: string | null = null
 let selectedTrafficKey: string | null = null
 let selectedWebSocketDecode: PayloadDecode | null = null
 let selectedWebSocketDecodeMessage = ''
 let selectedInspectorSignature: string | null = null
+type DecodedJsonMode = 'string' | 'formatted'
+let decodedJsonMode: DecodedJsonMode = 'formatted'
 let editingWebSocketMappingId: string | null = null
 let activeWorkspace: Workspace = 'traffic'
 let activeView: TrafficView = 'table'
@@ -841,6 +868,8 @@ async function refreshProxy() {
   proxyState.textContent = status.running ? 'Proxy running' : 'Proxy stopped'
   proxyState.dataset.state = status.running ? 'running' : 'stopped'
   toggleProxyButton.textContent = status.running ? 'Stop' : 'Start'
+  runtimeProxyState.textContent = status.running ? 'Running' : 'Stopped'
+  proxyMode.textContent = status.running ? 'Passthrough' : 'Stopped'
   proxyAddress.textContent = status.addr ?? '-'
   proxyCa.textContent = status.ca_der_len === null ? '-' : `${status.ca_der_len} bytes`
   caStorage.textContent = status.ca_storage_status ?? '-'
@@ -1182,7 +1211,9 @@ function renderSelectedExchange() {
           <div><dt>Host</dt><dd>${serverBadge(exchange.authority)}</dd></div>
           <div><dt>Body</dt><dd>${byteLabel(exchange.request_body_len)}</dd></div>
           <div><dt>Content type</dt><dd>${escapeHtml(exchange.payload_hint.request_content_type ?? '-')}</dd></div>
+          <div><dt>Message</dt><dd>${escapeHtml(payloadDecodeName(exchange.request_payload_decode))}</dd></div>
           <div><dt>Decode</dt><dd>${escapeHtml(exchange.request_payload_decode.status)}</dd></div>
+          <div class="detail-wide">${headerPreview('Request headers', exchange.request_headers)}</div>
         </dl>
       </section>
       <section class="detail-pane">
@@ -1196,11 +1227,31 @@ function renderSelectedExchange() {
           <div><dt>Size</dt><dd>${byteLabel(exchange.response_body_len)}</dd></div>
           <div><dt>Server time</dt><dd>${escapeHtml(exchange.server_time ?? '-')}</dd></div>
           <div><dt>Content type</dt><dd>${escapeHtml(exchange.payload_hint.response_content_type ?? '-')}</dd></div>
+          <div><dt>Message</dt><dd>${escapeHtml(exchange.response_payload_decode ? payloadDecodeName(exchange.response_payload_decode) : '-')}</dd></div>
           <div><dt>Decode</dt><dd>${escapeHtml(exchange.response_payload_decode?.status ?? 'No response body to decode')}</dd></div>
           <div><dt>Anomalies</dt><dd>${anomalyLabels(exchange.anomalies)}</dd></div>
+          <div class="detail-wide">${headerPreview('Response headers', exchange.response_headers)}</div>
         </dl>
       </section>
     </div>
+  `
+}
+
+function payloadDecodeName(payloadDecode: PayloadDecode) {
+  const names = applicationMessageEntries(payloadDecode).map((message) => friendlyMessageName(message.messageName))
+  return names.length > 0 ? names.join(', ') : payloadDecode.schema_message ? friendlyMessageName(payloadDecode.schema_message) : '-'
+}
+
+function headerPreview(label: string, headers: Record<string, string>) {
+  const count = Object.keys(headers).length
+  return `
+    <dt>${escapeHtml(label)}</dt>
+    <dd>
+      <details class="raw-protobuf-preview">
+        <summary>${count.toLocaleString()} header${count === 1 ? '' : 's'}</summary>
+        <pre class="json-preview">${escapeHtml(JSON.stringify(headers, null, 2))}</pre>
+      </details>
+    </dd>
   `
 }
 
@@ -1261,6 +1312,8 @@ function payloadDecodePanel(payloadDecode: PayloadDecode) {
   const compactJson = JSON.stringify(messageJson)
   const formattedJson = JSON.stringify(messageJson, null, 2)
   const rawFieldsLabel = applicationMessages.length > 0 ? 'Raw envelope fields' : 'Raw protobuf fields'
+  const jsonOutput = decodedJsonMode === 'string' ? compactJson : formattedJson
+  const jsonOutputLabel = decodedJsonMode === 'string' ? 'JSON string' : 'Formatted JSON'
 
   return `
     ${jsonPreviewPanel(payloadDecode)}
@@ -1272,17 +1325,13 @@ function payloadDecodePanel(payloadDecode: PayloadDecode) {
       <p>${escapeHtml(payloadDecode.status)}</p>
       <div class="json-output-block">
         <div class="json-preview-heading">
-          <strong>JSON string</strong>
-          <span>compact</span>
+          <strong>Decoded JSON</strong>
+          <div class="view-switch" role="group" aria-label="Decoded JSON view">
+            <button class="view-button ${decodedJsonMode === 'string' ? 'active' : ''}" type="button" data-json-view="string">String</button>
+            <button class="view-button ${decodedJsonMode === 'formatted' ? 'active' : ''}" type="button" data-json-view="formatted">Formatted</button>
+          </div>
         </div>
-        <pre class="json-compact" aria-label="Decoded protobuf JSON string">${escapeHtml(compactJson)}</pre>
-      </div>
-      <div class="json-output-block">
-        <div class="json-preview-heading">
-          <strong>Formatted JSON</strong>
-          <span>pretty-printed</span>
-        </div>
-        <pre class="decoded-json" aria-label="Formatted decoded protobuf JSON">${escapeHtml(formattedJson)}</pre>
+        <pre class="${decodedJsonMode === 'string' ? 'json-compact' : 'decoded-json'}" aria-label="${jsonOutputLabel}">${escapeHtml(jsonOutput)}</pre>
       </div>
       <details class="raw-protobuf-preview">
         <summary>${rawFieldsLabel}</summary>
@@ -1718,6 +1767,65 @@ function trafficRowMessageNames(row: TrafficRow) {
     : payloadDecode.schema_message ? [payloadDecode.schema_message] : []
 }
 
+function protobufFieldSearchText(fields: ProtobufFieldPreview[]): string {
+  return fields
+    .flatMap((field) => [
+      field.field_name,
+      field.value_preview,
+      protobufFieldSearchText(field.nested_fields),
+    ])
+    .filter(Boolean)
+    .join(' ')
+}
+
+function payloadSearchText(payloadDecode: PayloadDecode) {
+  return [
+    payloadDecode.direction,
+    payloadDecode.status,
+    payloadDecode.schema_message,
+    protobufFieldSearchText(payloadDecode.fields),
+    ...payloadDecode.json_previews.flatMap((preview) => [preview.direction, preview.status, preview.preview]),
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+function headersSearchText(headers: Record<string, string>) {
+  return Object.entries(headers)
+    .flatMap(([name, value]) => [name, value])
+    .join(' ')
+}
+
+function trafficRowSearchText(row: TrafficRow) {
+  const payloadDecode = trafficRowDecode(row)
+  const exchangeText = row.kind === 'http'
+    ? [
+        row.exchange.id,
+        headersSearchText(row.exchange.request_headers),
+        headersSearchText(row.exchange.response_headers),
+      ]
+    : [row.preview.id, row.preview.connection_id, row.preview.source]
+
+  return [
+    trafficRowName(row),
+    trafficRowDirection(row),
+    trafficRowMethod(row),
+    trafficRowHost(row),
+    row.kind === 'http' ? row.exchange.scheme : row.preview.scheme,
+    row.kind === 'http' ? row.exchange.path : row.preview.path,
+    row.kind === 'http' && row.part === 'response' && row.exchange.status !== null ? String(row.exchange.status) : null,
+    trafficRowPayloadHint(row).likely_protocol,
+    trafficRowPayloadHint(row).decode_status,
+    trafficRowPayloadHint(row).request_content_type,
+    trafficRowPayloadHint(row).response_content_type,
+    ...trafficRowAnomalies(row).map((anomaly) => `${anomaly.kind} ${anomaly.summary}`),
+    payloadSearchText(payloadDecode),
+    ...exchangeText,
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
 function isStreamingPriceV4Row(row: TrafficRow) {
   return trafficRowMessageNames(row).some((name) => name.toLowerCase().includes('streamingpricev4'))
 }
@@ -1772,23 +1880,7 @@ function filteredTrafficRows() {
       return true
     }
 
-    const haystack = [
-      trafficRowName(row),
-      trafficRowDirection(row),
-      trafficRowMethod(row),
-      trafficRowHost(row),
-      row.kind === 'http' ? row.exchange.scheme : row.preview.scheme,
-      row.kind === 'http' ? row.exchange.path : row.preview.path,
-      row.kind === 'http' && row.part === 'response' && row.exchange.status !== null ? String(row.exchange.status) : null,
-      payloadHint.likely_protocol,
-      payloadHint.decode_status,
-      payloadHint.request_content_type,
-      payloadHint.response_content_type,
-      ...anomalies.map((anomaly) => anomaly.kind),
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
+    const haystack = trafficRowSearchText(row).toLowerCase()
 
     return haystack.includes(search)
   })
@@ -2368,12 +2460,15 @@ function schemaBundleMatchesPreview(bundle: ProtoSchemaStatus, preview: WebSocke
 function renderPacketLogImportReport(report: PacketLogImportReport) {
   const sourceCount = report.sources.length
   const recordCount = report.sources.reduce((total, source) => total + source.record_count, 0)
-  packetLogStatus.textContent = `Loaded ${sourceCount} source${sourceCount === 1 ? '' : 's'} and ${recordCount.toLocaleString()} record${recordCount === 1 ? '' : 's'} into Traffic. Cache: ${report.cache_directory}`
+  const limitNote = report.records_skipped > 0
+    ? ` Loaded ${report.records_loaded.toLocaleString()} into Traffic and skipped ${report.records_skipped.toLocaleString()} over the ${report.record_limit?.toLocaleString() ?? 'configured'}-record limit.`
+    : ''
+  packetLogStatus.textContent = `Scanned ${sourceCount} source${sourceCount === 1 ? '' : 's'} and ${recordCount.toLocaleString()} record${recordCount === 1 ? '' : 's'}.${limitNote} Cache: ${report.cache_directory}`
   packetLogResults.innerHTML = [
     ...report.sources.slice(0, 12).map((source) => `
       <div class="packet-log-result">
         <strong>${escapeHtml(source.format.toUpperCase())}</strong>
-        <span>${source.record_count.toLocaleString()} records${source.malformed ? ' - malformed' : ''}</span>
+        <span>${source.record_count.toLocaleString()} records${source.records_skipped > 0 ? `, ${source.records_skipped.toLocaleString()} skipped` : ''}${source.malformed ? ' - malformed' : ''}</span>
         <small title="${escapeHtml(source.source)}">${escapeHtml(source.source)}</small>
         ${source.materialized_dat ? `<small>Cached as ${escapeHtml(source.materialized_dat)}</small>` : ''}
         ${source.warning ? `<small class="status-error">${escapeHtml(source.warning)}</small>` : ''}
@@ -2781,13 +2876,31 @@ trustCaButton.addEventListener('click', async () => {
 })
 
 toggleProxyButton.addEventListener('click', async () => {
-  if (proxyRunning) {
-    await invoke('stop_proxy')
-  } else {
-    await invoke('start_proxy_service')
-  }
+  toggleProxyButton.disabled = true
+  toggleProxyButton.textContent = proxyRunning ? 'Stopping...' : 'Starting...'
 
-  await refresh()
+  try {
+    if (proxyRunning) {
+      await invoke('stop_proxy')
+    } else {
+      await invoke('start_proxy_service')
+    }
+  } catch (error) {
+    const message = `Proxy ${proxyRunning ? 'stop' : 'start'} failed: ${String(error)}`
+    proxyState.textContent = 'Proxy error'
+    proxyState.dataset.state = 'stopped'
+    clientConfig.textContent = message
+    browserSetupStatus.textContent = message
+  } finally {
+    try {
+      await refresh()
+    } catch (error) {
+      const message = `Proxy status refresh failed: ${String(error)}`
+      clientConfig.textContent = message
+      browserSetupStatus.textContent = message
+    }
+    toggleProxyButton.disabled = false
+  }
 })
 
 captureModeButtons.forEach((button) => {
@@ -2851,18 +2964,33 @@ inspectPacketLogsButton.addEventListener('click', async () => {
     .map((path) => path.trim())
     .filter(Boolean)
 
+  await importPacketLogs(paths)
+})
+
+async function importPacketLogs(paths: string[]) {
+
   if (paths.length === 0) {
-    packetLogStatus.textContent = 'Enter at least one packet-log path.'
+    packetLogStatus.textContent = 'No supported DAT, GZ, or ZIP paths were selected.'
     return
   }
 
+  if (packetLogImportInFlight) {
+    packetLogStatus.textContent = 'A packet-log import is already in progress.'
+    return
+  }
+
+  packetLogImportInFlight = true
   inspectPacketLogsButton.disabled = true
   inspectPacketLogsButton.textContent = 'Opening...'
-  packetLogStatus.textContent = 'Opening sources, materializing gzip logs, and decoding packet records...'
+  packetLogStatus.textContent = 'Opening sources, materializing archives, and decoding packet records...'
   packetLogResults.textContent = ''
 
+  const parsedLimit = Number.parseInt(packetLogLimit.value, 10)
+  const maxRecords = Number.isFinite(parsedLimit) ? Math.min(100_000, Math.max(100, parsedLimit)) : 10_000
+  packetLogLimit.value = String(maxRecords)
+
   try {
-    const imported = await invoke<PacketLogImportResult>('import_packet_log_sources', { paths })
+    const imported = await invoke<PacketLogImportResult>('import_packet_log_sources', { paths, maxRecords })
     latestImportedSummary = imported.summary
     captureMode = 'log'
     renderCaptureMode()
@@ -2871,9 +2999,55 @@ inspectPacketLogsButton.addEventListener('click', async () => {
   } catch (error) {
     packetLogStatus.textContent = `Packet-log import failed: ${String(error)}`
   } finally {
+    packetLogImportInFlight = false
     inspectPacketLogsButton.disabled = false
     inspectPacketLogsButton.textContent = 'Open in Traffic'
   }
+}
+
+packetLogFiles.addEventListener('change', () => {
+  const paths = [...(packetLogFiles.files ?? [])]
+    .map((file) => (file as File & { path?: string }).path)
+    .filter((path): path is string => Boolean(path))
+
+  if (paths.length === 0) {
+    packetLogStatus.textContent = 'The file picker did not expose local paths. Paste paths or use the drop area in the Tauri window.'
+    return
+  }
+
+  packetLogPaths.value = paths.join('\n')
+  void importPacketLogs(paths)
+})
+
+void getCurrentWebview().onDragDropEvent((event) => {
+  if (event.payload.type === 'enter' || event.payload.type === 'over') {
+    packetLogDrop.classList.add('drag-over')
+    return
+  }
+
+  packetLogDrop.classList.remove('drag-over')
+  if (event.payload.type !== 'drop' || event.payload.paths.length === 0) {
+    return
+  }
+
+  const paths = event.payload.paths.filter((path) => /\.(dat|gz|zip)$/i.test(path))
+  packetLogPaths.value = paths.join('\n')
+  void importPacketLogs(paths)
+}).catch(() => {
+  packetLogStatus.textContent = 'Drag and drop is unavailable in this window; use the file picker or paste paths.'
+})
+
+decodedMessageContent.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  const button = target.closest<HTMLButtonElement>('[data-json-view]')
+  const view = button?.dataset.jsonView
+  if (view !== 'string' && view !== 'formatted') {
+    return
+  }
+
+  decodedJsonMode = view
+  selectedInspectorSignature = null
+  renderSelectedTraffic()
 })
 
 loadDescriptorSetButton.addEventListener('click', async () => {

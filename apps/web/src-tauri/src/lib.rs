@@ -15,7 +15,7 @@ use protobuf_decoder_proxy::{
 };
 use serde::Deserialize;
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Manager, RunEvent, WindowEvent};
 
 mod packet_log;
 
@@ -3073,6 +3073,22 @@ async fn stop_proxy_if_running(state: &tauri::State<'_, ProxyState>) -> Result<(
     Ok(())
 }
 
+fn stop_proxy_for_shutdown(state: &ProxyState) {
+    let handle = match state.handle.lock() {
+        Ok(mut handle) => handle.take(),
+        Err(error) => {
+            log::error!("failed to lock proxy state during shutdown: {error}");
+            return;
+        }
+    };
+
+    if let Some(handle) = handle {
+        if let Err(error) = tauri::async_runtime::block_on(handle.stop()) {
+            log::error!("failed to stop proxy cleanly during application shutdown: {error}");
+        }
+    }
+}
+
 #[tauri::command]
 fn inspect_packet_log_sources(
     app: tauri::AppHandle,
@@ -3153,6 +3169,18 @@ pub fn run() {
             }
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                let state = window.app_handle().state::<ProxyState>();
+                stop_proxy_for_shutdown(&state);
+            }
+        })
+        .on_event(|app, event| {
+            if matches!(event, RunEvent::Exit) {
+                let state = app.state::<ProxyState>();
+                stop_proxy_for_shutdown(&state);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             proxy_status,

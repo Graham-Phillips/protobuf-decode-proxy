@@ -3147,7 +3147,7 @@ fn import_packet_log_sources(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(ProxyState::default())
         .setup(|app| {
             let state = app.state::<ProxyState>();
@@ -3202,12 +3202,6 @@ pub fn run() {
                 stop_proxy_for_shutdown(&state);
             }
         })
-        .on_event(|app, event| {
-            if matches!(event, RunEvent::Exit) {
-                let state = app.state::<ProxyState>();
-                stop_proxy_for_shutdown(&state);
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             proxy_status,
             start_proxy_service,
@@ -3229,8 +3223,15 @@ pub fn run() {
             import_packet_log_sources,
             stop_proxy
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running tauri application");
+
+    app.run(|app, event| {
+        if matches!(event, RunEvent::Exit) {
+            let state = app.state::<ProxyState>();
+            stop_proxy_for_shutdown(&state);
+        }
+    });
 }
 
 #[cfg(test)]

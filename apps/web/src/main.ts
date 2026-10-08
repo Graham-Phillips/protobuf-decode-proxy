@@ -198,6 +198,9 @@ type TrafficRow =
   | { kind: 'http'; part: HttpTrafficPart; exchange: HttpExchange }
   | { kind: 'websocket'; preview: WebSocketMessagePreview }
 
+const TRAFFIC_ROW_HEIGHT = 28
+const TRAFFIC_ROW_OVERSCAN = 18
+
 const app = document.querySelector<HTMLDivElement>('#app')!
 
 app.innerHTML = `
@@ -1052,9 +1055,8 @@ function renderTrafficMessages() {
   currentTrafficPairs = buildTrafficPairMap(allRows)
   const visibleRows = filteredTrafficRows()
   const sortedRows = sortTrafficRows(visibleRows)
-  const visibleWindow = sortedRows
   const scrollTopBeforeRender = exchangeTableWrap.scrollTop
-  const shouldPreserveScroll = !autoScrollExchanges
+  const shouldPreserveScroll = !autoScrollEnabled || !autoScrollExchanges
   const decodedRows = allRows.filter((row) => {
     const decode = trafficRowDecode(row)
     return payloadDecodeState(decode) === 'decoded'
@@ -1065,7 +1067,7 @@ function renderTrafficMessages() {
     : 'auto-scroll is off'
 
   updateSortHeaders()
-  trafficSummary.textContent = `${visibleRows.length} visible of ${trafficRows().length} traffic messages, ${resourceFilterSummary()}. ${sortDescription()}; ${scrollStatus}.`
+  trafficSummary.textContent = `${visibleRows.length} visible of ${allRows.length} traffic messages, ${resourceFilterSummary()}. ${sortDescription()}; ${scrollStatus}.`
   summaryMessages.textContent = String(allRows.length)
   summaryDecoded.textContent = String(decodedRows)
   summaryAnomalies.textContent = String(anomalies)
@@ -1075,7 +1077,7 @@ function renderTrafficMessages() {
     : `${resourceFilterSummary()}${decodeFilter.value === 'all' ? '' : `, ${decodeFilter.value}`}${anomalyFilter.checked ? ', anomalies' : ''}${errorsOnlyFilter.checked ? ', errors' : ''}${deadCallsFilter.checked ? ', dead calls' : ''}${streamingPriceFilter.checked ? '' : ', StreamingPriceV4 hidden'}${keepAliveAckFilter.checked ? '' : ', keep-alive ACKs hidden'}`
   analyseSelectionButton.disabled = visibleRows.length === 0
 
-  if (visibleWindow.length === 0) {
+  if (sortedRows.length === 0) {
     selectedTrafficKey = null
     selectedExchangeId = null
     selectedWebSocketPreviewId = null
@@ -1089,7 +1091,18 @@ function renderTrafficMessages() {
     selectedTrafficKey = trafficRowKey(newest)
   }
 
-  trafficMessages.innerHTML = visibleWindow
+  const viewportRows = Math.max(12, Math.ceil(exchangeTableWrap.clientHeight / TRAFFIC_ROW_HEIGHT))
+  const firstIndex = Math.max(0, Math.floor(scrollTopBeforeRender / TRAFFIC_ROW_HEIGHT) - TRAFFIC_ROW_OVERSCAN)
+  const lastIndex = Math.min(sortedRows.length, firstIndex + viewportRows + (TRAFFIC_ROW_OVERSCAN * 2))
+  const visibleWindow = sortedRows.slice(firstIndex, lastIndex)
+  const topSpacer = firstIndex > 0
+    ? `<tr class="traffic-virtual-spacer" aria-hidden="true"><td colspan="10" style="height: ${firstIndex * TRAFFIC_ROW_HEIGHT}px"></td></tr>`
+    : ''
+  const bottomSpacer = sortedRows.length > lastIndex
+    ? `<tr class="traffic-virtual-spacer" aria-hidden="true"><td colspan="10" style="height: ${(sortedRows.length - lastIndex) * TRAFFIC_ROW_HEIGHT}px"></td></tr>`
+    : ''
+
+  trafficMessages.innerHTML = topSpacer + visibleWindow
     .map((row) => {
       const pair = trafficPairForRow(row)
       const source = row.kind === 'websocket' ? row.preview.source : null
@@ -1108,10 +1121,14 @@ function renderTrafficMessages() {
       </tr>
     `
     })
-    .join('')
+    .join('') + bottomSpacer
 
   if (shouldPreserveScroll) {
+    programmaticExchangeScroll = true
     exchangeTableWrap.scrollTop = scrollTopBeforeRender
+    window.setTimeout(() => {
+      programmaticExchangeScroll = false
+    }, 0)
   }
 }
 
@@ -1294,23 +1311,25 @@ function jsonPreviewPanel(payloadDecode: PayloadDecode) {
   }
 
   return `
-    <div class="decode-preview">
-      <div class="panel-heading">
-        <h3>JSON Preview</h3>
+    <details class="decoded-secondary">
+      <summary>
+        <span>Wire JSON preview</span>
         <span class="small-value">${payloadDecode.json_previews.length} payload(s)</span>
-      </div>
-      ${payloadDecode.json_previews
-        .map((preview) => `
-          <div class="json-preview-block">
-            <div class="json-preview-heading">
-              <strong>${escapeHtml(preview.direction)}</strong>
-              <span>${escapeHtml(preview.status)}</span>
+      </summary>
+      <div class="decoded-secondary-content">
+        ${payloadDecode.json_previews
+          .map((preview) => `
+            <div class="json-preview-block">
+              <div class="json-preview-heading">
+                <strong>${escapeHtml(preview.direction)}</strong>
+                <span>${escapeHtml(preview.status)}</span>
+              </div>
+              ${preview.preview ? `<pre class="json-preview">${escapeHtml(preview.preview)}</pre>` : ''}
             </div>
-            ${preview.preview ? `<pre class="json-preview">${escapeHtml(preview.preview)}</pre>` : ''}
-          </div>
-        `)
-        .join('')}
-    </div>
+          `)
+          .join('')}
+      </div>
+    </details>
   `
 }
 
@@ -1349,13 +1368,11 @@ function payloadDecodePanel(payloadDecode: PayloadDecode) {
   const jsonOutputLabel = decodedJsonMode === 'string' ? 'JSON string' : 'Formatted JSON'
 
   return `
-    ${jsonPreviewPanel(payloadDecode)}
     <div class="decode-preview">
       <div class="panel-heading">
         <h3>Decoded protobuf JSON</h3>
         <span class="small-value">${messageJson.length} message${messageJson.length === 1 ? '' : 's'}</span>
       </div>
-      <p>${escapeHtml(payloadDecode.status)}</p>
       <div class="json-output-block">
         <div class="json-preview-heading">
           <strong>Decoded JSON</strong>
@@ -1366,6 +1383,8 @@ function payloadDecodePanel(payloadDecode: PayloadDecode) {
         </div>
         <pre class="${decodedJsonMode === 'string' ? 'json-compact' : 'decoded-json'}" aria-label="${jsonOutputLabel}">${escapeHtml(jsonOutput)}</pre>
       </div>
+      <p>${escapeHtml(payloadDecode.status)}</p>
+      ${jsonPreviewPanel(payloadDecode)}
       <details class="raw-protobuf-preview">
         <summary>${rawFieldsLabel}</summary>
         ${protobufFieldTable(payloadDecode.fields)}
@@ -2917,6 +2936,7 @@ function scrollExchangeTableIfNeeded(shouldAutoScroll: boolean) {
 
   programmaticExchangeScroll = true
   exchangeTableWrap.scrollTop = exchangeTableWrap.scrollHeight
+  renderTrafficMessages()
   window.setTimeout(() => {
     programmaticExchangeScroll = false
   }, 0)
@@ -2933,7 +2953,11 @@ autoScrollToggle.addEventListener('change', () => {
   autoScrollEnabled = autoScrollToggle.checked
   autoScrollExchanges = autoScrollEnabled
   saveUiPreferences()
-  scrollExchangeTableIfNeeded(autoScrollEnabled)
+  if (autoScrollEnabled) {
+    scrollExchangeTableIfNeeded(true)
+  } else {
+    renderTrafficMessages()
+  }
 })
 
 exportCaButton.addEventListener('click', async () => {
@@ -3440,7 +3464,9 @@ exchangeTableWrap.addEventListener('scroll', () => {
     return
   }
 
-  autoScrollExchanges = false
+  const atBottom = exchangeTableWrap.scrollTop + exchangeTableWrap.clientHeight >= exchangeTableWrap.scrollHeight - 4
+  autoScrollExchanges = autoScrollEnabled && atBottom
+  renderTrafficMessages()
 })
 
 viewButtons.forEach((button) => {

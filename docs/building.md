@@ -54,3 +54,35 @@ do not commit, tag, or publish anything automatically.
 
 Outputs are under `apps/web/src-tauri/target/release`: `app.exe` and installers
 in `bundle/nsis` and `bundle/msi`.
+
+## Offline Rust dependencies
+
+The repository-level `vendor` directory contains the locked registry crates for
+both Rust projects: the Tauri app and the standalone proxy crate. The root
+`.cargo/config.toml` replaces crates.io with this directory. Keep both
+`Cargo.lock` files checked in; do not commit `target` build output.
+
+When dependencies change, refresh the vendor directory from the repository root
+on a machine with crates.io access:
+
+```powershell
+cargo vendor --locked --manifest-path apps/web/src-tauri/Cargo.toml --sync core/proxy/Cargo.toml vendor
+```
+
+The `--sync` option includes the proxy crate's separate lockfile, including its
+development dependencies. Commit the refreshed `vendor` tree together with any
+intentional manifest or lockfile changes. Keep the Cargo source replacement in
+`.cargo/config.toml`; `cargo vendor` prints the equivalent configuration when
+run.
+
+On the Windows build machine, verify the desktop app and proxy crate without
+registry access:
+
+```powershell
+cargo build --locked --offline --manifest-path apps/web/src-tauri/Cargo.toml
+cargo test --locked --offline --manifest-path core/proxy/Cargo.toml
+```
+
+Cargo's `--offline` flag prevents Cargo from accessing registries. These Rust
+checks do not verify frontend package availability: Node dependencies are
+separate and can be checked with `pnpm install --offline --frozen-lockfile`.

@@ -127,6 +127,8 @@ Core entities:
 - [ ] Windows curl/Schannel note: local generated MITM certs can fail with `CERT_TRUST_REVOCATION_STATUS_UNKNOWN` even when `--cacert` points at the exported protobuf-decoder PEM, because the dev CA/leaf certs do not publish revocation endpoints. For manual curl smoke tests use `--ssl-no-revoke` with `--cacert`; later product docs should explain this clearly and separate it from real trust-store installation guidance.
 - [x] CA lifetime note: earlier proxy builds generated a fresh CA every restart, which caused stale exported certs and errors such as `certificate signature failure`. Persistent CA storage now removes that restart churn; stale exports should only happen after a future CA reset/regeneration.
 - [x] Persistent CA storage implemented: Tauri now loads or creates `protobuf-decoder-ca.pem` and `protobuf-decoder-ca-key.pem` in the app data directory, starts the proxy with that saved CA, and reports CA storage status in the UI. Export still writes public `.cer` and `.pem` copies to Downloads; the private key stays in app data.
+- [ ] Add macOS CA trust installation for the current user: install the persistent local CA into the login Keychain using the native macOS trust mechanism, report permission/failure details, and provide a reset/removal path. Keep certificate export as the fallback when the user does not approve automatic trust.
+- [ ] Make CA setup platform-aware: use Windows certificate-store installation where supported, macOS Keychain installation on macOS, and clear export/manual-install guidance for unsupported platforms.
 - [x] Browser setup UX implemented in the live proxy UI: shows the proxy address, CA trust guidance, copyable PowerShell launch commands for isolated Edge/Chrome profiles, and browser smoke-test links for HTTP, HTTPS, and WebSocket checks.
 - [x] Initial HTTP exchange model implemented: Tauri pairs captured HTTP request/response events by `request_id`, computes duration and body-length metadata, emits first-pass anomaly flags for missing response, HTTP 4xx/5xx, slow response, and large response, and the UI displays recent exchanges in a table.
 - [x] Initial payload/protobuf hinting implemented: HTTP exchanges now include request/response content-type, likely protocol (`grpc`, `protobuf`, `json`, `text`, or `unknown`), decode status text, and a low-severity `protobuf_undecoded` anomaly for likely protobuf/gRPC traffic until decoder configuration exists. Protobuf wire payloads do not self-identify proto2/proto3; descriptor/schema loading is still required for real decoding.
@@ -177,6 +179,8 @@ Core entities:
 - [x] Descriptor bundle scoping started: loaded proto descriptor sets are now in-memory named bundles with host match rules (`any`, `exact`, `suffix`, `contains`) plus optional path-prefix tags. The Schemas workspace can load multiple bundles, displays their scope, and selected WebSocket frame decode suggestions prefer bundles matching that frame's host/path before falling back to all loaded message types. Persistence, edit/delete, ambiguity indicators, and explicit merge behavior remain open.
 - [x] Removed sanitized fixture export from the app after validating it was not useful for real CMC decode work. For safe non-CMC development, create a tiny synthetic descriptor set plus synthetic HTTP/WebSocket protobuf payloads, implement durable mapping rules against those, then bring the generic code back to the locked-down machine for validation with the real `mobile-server-api.pb`.
 - [x] Application packet decoding now follows the behavioral reference in `wfe-network-types`: loaded descriptor sets are inspected for the `generator.message_type_ordinal` file option, incoming `iPhonePacketProto` envelopes are unwrapped, and each `messageList` payload is decoded by `(messageType, messagePayloadVersion)`. This is automatic for HTTP and WebSocket previews, with the descriptorless wire preview retained for direct payloads and unknown mappings. The Rust unit tests cover ordinal/version metadata extraction; compile and executable validation must happen on the build/test machine because this workstation cannot complete Cargo dependency downloads.
+- [ ] Ensure imported packet-log envelopes preserve and display both request and response messages. Add fixtures containing each direction, verify that request payloads are not discarded as response-only records, and keep direction/correlation/source metadata attached to every decoded inner message.
+- [ ] Fix the native log-file open dialog. Verify single-file selection, multi-select, cancellation, supported `.dat`/`.gz`/`.zip` filters, and parity with the existing drag-and-drop import path.
 - [ ] Add schema bundle persistence plus edit/delete controls.
 - [ ] Add row/frame schema status indicators: matched schema, no schema, ambiguous schema.
 - [ ] Handoff note for schema-aware protobuf decoding: current locked-down-machine test loaded descriptor bundle `mobile-server-api` from `C:\Work2\GP\mobile-server-api\mobile-server-api\target\mobile-server-api.pb` with 726 messages and `Any host` scope, but Traffic payload previews still show `Descriptorless protobuf wire preview; schemas are required for field names and exact types.` This is expected until a concrete message-type mapping matches the captured frame. WebSocket mapping rules now support host/path/direction/frame-kind/direct-message and envelope-field strategies, persist to app data, auto-apply in WebSocket frame preview builders, and keep descriptorless wire preview as the fallback when no rule matches or the match is ambiguous. HTTP protobuf payloads still need equivalent durable mapping rules.
@@ -211,10 +215,13 @@ Core entities:
 - [x] Prototype an overview timeline for HTTP exchanges. The Traffic timeline tab now renders exchange start position, duration, protocol, HTTP status, and finding markers from captured data. Treat lower-level proxy/WebSocket lifecycle events as their own event timeline, closer to Wireshark-style chronological evidence, rather than mixing them into the main HTTP exchange table.
 - [x] Add compact server markers to captured traffic rows. HTTP exchange rows, WebSocket frame rows, detail panes, and timeline labels now use deterministic colored server badges/dots based on the captured authority so multi-backend captures are easier to scan without adding another long text column.
 - [ ] Extend the timeline to include selectable WebSocket frames/lifecycle events without losing the cleaner HTTP exchange overview.
+- [ ] Make the main inspection panels user-resizable by dragging their dividers, including traffic, decoded-message, transport/detail, and diagnostics areas. Persist sensible sizes and enforce minimum dimensions so the table and decoded JSON remain usable.
+- [ ] Add an optional split Traffic view with correlated requests on the left and responses on the right. Use compact rows, keep unpaired/orphan messages visible, and retain a direction-aware stream view for WebSocket traffic.
 - [ ] Prototype a swimlane/flow view.
 - [ ] Prototype a heatmap for latency, error density, or message volume. Current UI has a placeholder heatmap tab and a simple status/error-colored cell grid; next step is meaningful bucketing by host/message type/latency/error density.
 - [ ] Add raw/decoded inspector panel.
 - [ ] Add filters for session, message type, anomaly type, latency, and direction.
+- [ ] Add a dedicated Prices workspace for price history and tick charts, with a synchronized network timeline showing subscriptions, unsubscriptions, responses, keep-alives, errors, and reconnects.
 - [ ] Evaluate rendering approach:
   - DOM/SVG for early prototype
   - Konva/PixiJS for dense visualizations
@@ -246,6 +253,57 @@ Core entities:
 - [ ] Support loading small fixtures fully in memory before optimizing.
 - [ ] Benchmark with representative protobuf log sizes before committing to complex storage.
 
+### Capture, Recording, Replay, And Application State
+
+- [ ] Use a disk-backed live-capture spool instead of discarding older traffic
+  when the in-memory UI limit is reached. Append raw encoded records plus
+  direction, timestamps, headers/metadata, correlation, and decode status to an
+  application-managed per-session cache directory.
+- [ ] Keep only a bounded working window and lightweight row/index metadata in
+  memory. Load older rows and payloads from the spool on demand while scrolling
+  so large captures remain responsive without silently losing data.
+- [ ] Make the spool append-only and crash-recoverable. Detect and recover a
+  partial final record after an unexpected shutdown, and expose incomplete or
+  unrecoverable records as explicit capture warnings.
+- [ ] Add configurable per-session disk quotas, free-space checks, and clear
+  warnings before capture is paused or rotated. Do not silently drop traffic
+  because a limit was reached.
+- [ ] Persist spool sessions across application restarts, offer recovery of the
+  previous live capture, and clean up old temporary sessions according to a
+  user-visible retention policy. `Clear Capture` should remove the active spool.
+- [ ] Promote a live spool to a named native log when the user chooses Save or
+  Record, preserving the encoded source and derived decoded JSON without an
+  unnecessary second full in-memory copy.
+- [ ] Save real-time traffic as a lossless native capture that preserves encoded
+  protobuf bytes, direction, timestamps, headers/metadata, schema/codec identity,
+  and request/response correlation. Store decoded JSON as a derived companion
+  view rather than replacing the encoded source.
+- [ ] Support exporting the same capture as editable JSON/fixture data, with
+  explicit warnings when editing decoded JSON cannot be safely re-encoded for a
+  message whose schema or codec is unavailable.
+- [ ] Allow recorded traffic to be turned into curated request/response sets for
+  Local Dev Server mode, including copied, edited, or newly created unencrypted
+  responses.
+- [ ] Extend Replay Mode so a loaded protobuf log or selected request/response
+  set can drive a client session. Support preset response matching, configurable
+  request passthrough to the real server, response sequences, and a visible
+  replay timeline position that can be moved while investigating a session.
+- [ ] Define replay safety rules for authentication, stateful sessions, timing,
+  duplicate requests, missing responses, and requests that are allowed to pass
+  through.
+- [ ] Detect the application startup configuration blob in real traffic and
+  preserve it as a named configuration artifact when possible. Allow local
+  inspection, editing, validation, and use as a curated Local Dev Server
+  response, including CMC/CCMS flag overrides without changing the real server.
+- [ ] Decode the application's persisted UI/state data when its format and
+  protobuf/schema mapping are identified. Allow users to import a saved
+  persistence file, inspect and edit it locally, and use it to recreate a
+  curated client setup with development accounts while keeping credentials and
+  secrets protected.
+- [ ] Define provenance and redaction rules for saved captures, response sets,
+  configuration blobs, and persistence data so sensitive account/session data is
+  not accidentally included in fixtures or shared releases.
+
 ### Offline/Proxy Dev Mode
 
 - [ ] Define editable fixture format for cached request/response pairs.
@@ -273,6 +331,13 @@ Core entities:
 - [ ] Stream decoded events into the same model used by offline ingestion.
 - [ ] Make safety boundaries explicit: local use, credentials, secrets, and redaction.
 - [ ] Manual target test: open `platform.cmcmarkets.com` in an isolated Edge/Chrome profile configured with `127.0.0.1:27777` as HTTP/HTTPS proxy, confirm this app passes traffic through and captures HTTP/WebSocket exchanges. Expect possible blockers from certificate pinning, HSTS/trust-store mismatch, service worker/cache behavior, HTTP/2/gRPC support gaps, authentication/session requirements, or WebSocket/protobuf payloads that need body capture before decoding.
+
+### Build And Distribution
+
+- [ ] Add a GitHub Actions release workflow with native Windows and macOS jobs. Publish Windows executable/NSIS/MSI artifacts and macOS `.app`/`.dmg` artifacts, with versions and checksums tied to the same release.
+- [ ] Add Windows code signing for the executable and installers using a protected CI certificate/secret or a hosted signing service, with timestamping and a SmartScreen-friendly release process. Keep unsigned builds available only for internal testing when signing credentials are absent.
+- [ ] Add macOS Developer ID signing and notarization for the `.app`/`.dmg`, using protected Apple/App Store Connect credentials. Verify Gatekeeper installation on both Intel and Apple Silicon Macs.
+- [ ] Decide whether macOS releases should be universal binaries or separate Intel and Apple Silicon downloads, then test the chosen target(s) with the proxy, browser setup, CA trust flow, and protobuf decoding.
 
 ## Open Questions
 

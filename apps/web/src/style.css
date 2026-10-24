@@ -647,7 +647,10 @@ h3 {
 
 .exchange-table-wrap {
   height: clamp(240px, 40vh, 420px);
+  min-height: 180px;
+  max-height: 72vh;
   overflow: auto;
+  resize: vertical;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow-anchor: none;
@@ -1191,7 +1194,11 @@ h3 {
 }
 
 .decoded-message-content {
+  min-height: 90px;
+  max-height: 48vh;
   margin-top: 8px;
+  overflow: auto;
+  resize: vertical;
   color: var(--muted);
   font-size: 14px;
 }
@@ -1237,6 +1244,9 @@ h3 {
 }
 
 .detail-panel-content {
+  max-height: 56vh;
+  overflow: auto;
+  resize: vertical;
   padding: 0 14px 14px;
 }
 
@@ -1260,6 +1270,9 @@ h3 {
 }
 
 .diagnostics-panel > .events-panel {
+  max-height: 36vh;
+  overflow: auto;
+  resize: vertical;
   margin-top: 0;
   border: 0;
   border-top: 1px solid var(--border);

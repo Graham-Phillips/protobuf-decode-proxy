@@ -1,8 +1,7 @@
-# Next tasks for AI
+# Protobuf Decode/Proxy TODO
 
-Use this file for the next round of work. `codex-todo.md` is background and
-history; verify its claims against the current code and running app. Leave it
-unchanged for this work.
+Canonical project backlog. Verify status against the current code and running
+app before marking tasks complete. Keep completed implementation history brief.
 
 ## 0. [offline crate] Make Rust builds work without crate downloads
 
@@ -12,6 +11,8 @@ unchanged for this work.
   and a blocked download returned invalid crate data.
 - [ ] Add Cargo source configuration to use the checked-in vendor sources, and
   retain the existing `Cargo.lock` files. Do not commit `target` build output.
+- [ ] Before finalizing the vendor bundle, include any newly selected runtime
+  dependencies (including a possible Tantivy dependency) in the locked graph.
 - [ ] Bring the vendor sources and configuration back to the locked-down
   machine, then verify the Windows build with `--locked --offline` and confirm
   it makes no crates.io requests.
@@ -167,6 +168,9 @@ message decoding (nested rows are flattened in this copied example):
   on the right, aligned by correlation so the matching response sits beside its
   request. Keep WebSocket messages as a direction-aware stream when no pairing
   evidence exists.
+- [x] Basic client-side Traffic search exists for row metadata and available
+  decoded previews. Keep it as the current solution; full indexed search is a
+  later scale-up, not a blocker for the near-term workflow.
 - [ ] Add local text search over message names, paths, session IDs, transport
   metadata, and case-insensitive request/response headers.
 - [ ] Search raw UTF-8/text and JSON bodies where available, protobuf wire
@@ -174,12 +178,27 @@ message decoding (nested rows are flattened in this copied example):
   envelope/application message names. Keep request/response direction attached
   to each match and do not claim that arbitrary binary bytes are searchable
   without a decoder.
-- [ ] Index decoded values as derived local data while preserving the raw
-  payload as the source of truth. Update the index for live traffic, imported
-  logs, and saved captures without sending payloads to a cloud service.
-- [ ] Show match snippets and source/direction context; selecting a result must
-  select the underlying Traffic row/message and eventually highlight the match
-  in the decoded/header/body inspector.
+- [ ] Later: add Tantivy as a rebuildable, local derived index, not the source of
+  truth. Create one document per HTTP request/response row or WebSocket message,
+  with stable message/source IDs and searchable headers, readable text/JSON
+  bodies, message names, protobuf field names, and decoded string values.
+- [ ] Index decoded values for live traffic, imported logs, and saved captures
+  without sending payloads to a cloud service. Do not index whole binary
+  payloads as hex; search typed decoded fields and optionally bounded printable
+  text extracted from undecoded payloads.
+- [ ] Add Tauri search/rebuild/clear commands and keep the index under app data.
+  Tie clearing/rebuilding to capture/session lifecycle and preserve imported
+  source identity.
+- [ ] For live traffic, index on a background worker and consume new/changed
+  events incrementally; do not block proxy forwarding or re-index full polling
+  snapshots. Upsert evolving request documents and batch index commits/reader
+  refreshes.
+- [ ] Index large log imports in batches with progress and cancellation rather
+  than duplicating the entire import in webview memory.
+- [ ] Show match snippets and source/direction context. Selecting a result must
+  select the underlying Traffic row/message, switch to the relevant source,
+  scroll it into view, and eventually highlight the match in the decoded,
+  header, or body inspector.
 - [x] Clarify the Resource `Proto` filter versus Payload `protobuf` filter. The
   UI now labels them as `Proto resource` and `Payload type: Protobuf`; revisit
   the underlying predicates if real captures show they are still equivalent.
@@ -352,7 +371,71 @@ and inspect the useful data without navigating through unrelated detail.
 - [ ] Make the active set, mapping result, fallback-to-server behavior, and
   replay/sequence position visible and auditable.
 
-## 9. Mode and format design decisions
+## 9. Data model, correlation, and flows
+
+- [ ] Define a versioned normalized event model with stable ID, timestamp,
+  direction, protocol, transport/session metadata, raw-payload reference,
+  decoded payload, normalization fields, and decode errors.
+- [ ] Define Session, Flow, CorrelationHint, and AnomalyFinding models, including
+  evidence, severity, explanation, and detector identity. Decide whether the
+  contracts live in Rust, TypeScript, JSON Schema, or a generated shared IDL.
+- [ ] Keep protocol-specific decoding and correlation behavior behind adapters;
+  avoid protobuf assumptions in the generic event model.
+- [ ] Pair protobuf requests and responses using explicit correlation IDs when
+  available, with documented fallback rules. Represent pending requests,
+  orphan responses, duplicates, and unpaired messages clearly; calculate
+  latency and reconstruct related flows.
+
+## 10. Anomaly detection
+
+- [ ] Document the first-pass detector set and how `../net-anomaly` could
+  integrate without making it a runtime dependency prematurely.
+- [ ] Implement explainable local detectors for decode failures, missing/late
+  responses, unexpected response types, error-state messages, out-of-order
+  sequences, and latency spikes against a baseline.
+- [ ] Ensure every anomaly explains the observed evidence and why it is
+  suspicious. Define a detector interface before adding plugin complexity.
+- [ ] Keep cloud AI optional. If an AI provider is added, make data sharing
+  explicit, redact before sending, never embed credentials, and keep local
+  deterministic findings as the source of record.
+
+## 11. Storage and capture retention
+
+- [ ] Decide the initial durable storage approach and define raw-payload,
+  timeline, session, and flow indexing needs. Benchmark with representative
+  packet-log sizes before adopting a heavier storage engine.
+- [ ] Use a disk-backed, append-only live-capture spool instead of discarding
+  older traffic when the in-memory UI window fills. Preserve encoded records,
+  direction, timestamps, headers/metadata, correlation, and decode status.
+- [ ] Keep a bounded working window and lightweight row/index metadata in
+  memory; load older rows and payloads from disk on demand.
+- [ ] Make the spool crash-recoverable, detect partial final records, and report
+  incomplete or unrecoverable data. Add per-session quotas, free-space checks,
+  and visible warnings rather than silently dropping traffic.
+- [ ] Persist/recover spool sessions across restarts and define visible cleanup
+  and retention behavior. `Clear Capture` should remove the active spool.
+- [ ] Promote a live spool to a named native log on Save/Record without making
+  an unnecessary second full in-memory copy; preserve provenance and redaction
+  rules for captures, fixtures, credentials, and user data.
+
+## 12. Proxy hardening and release builds
+
+- [ ] Keep proxy tests independently runnable from the UI and document
+  unsupported cases such as certificate pinning and clients that cannot trust
+  the local CA.
+- [ ] Verify HTTP/2 and unary/streaming gRPC behavior before claiming support.
+- [ ] Complete platform-aware CA trust setup: Windows certificate-store
+  installation where supported, macOS login Keychain installation/removal, and
+  clear manual export guidance as a fallback.
+- [ ] Add native Windows and macOS GitHub Actions release jobs. Publish the
+  Windows executable/installer and macOS `.app`/`.dmg`, with versions and
+  checksums tied to the same release.
+- [ ] Add Windows executable/installer signing and timestamping using protected
+  CI credentials or a hosted signing service to reduce SmartScreen warnings.
+- [ ] Add macOS Developer ID signing and notarization; decide universal versus
+  separate Intel/Apple Silicon artifacts and verify Gatekeeper installation.
+
+## 13. Mode and format design decisions
 
 - [ ] Choose a versioned log format that can preserve raw traffic, decoded JSON,
   schema identity, timestamps, direction, and request/response correlation.

@@ -4,6 +4,20 @@ Use this file for the next round of work. `codex-todo.md` is background and
 history; verify its claims against the current code and running app. Leave it
 unchanged for this work.
 
+## 0. [offline crate] Make Rust builds work without crate downloads
+
+- [ ] On a machine with working crates.io access, vendor the complete locked
+  dependency graphs for the Tauri app and proxy crate. This locked-down machine
+  cannot currently seed them: a previous offline build lacked `alloc-no-stdlib`
+  and a blocked download returned invalid crate data.
+- [ ] Add Cargo source configuration to use the checked-in vendor sources, and
+  retain the existing `Cargo.lock` files. Do not commit `target` build output.
+- [ ] Bring the vendor sources and configuration back to the locked-down
+  machine, then verify the Windows build with `--locked --offline` and confirm
+  it makes no crates.io requests.
+- [ ] Document how to refresh the vendor tree when dependencies change. Keep
+  Node/frontend dependency availability as a separate offline-build check.
+
 ## What needs fixing
 
 The main page is too busy, but still does not show the information we need:

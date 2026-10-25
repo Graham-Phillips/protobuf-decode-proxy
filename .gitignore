@@ -1,5 +1,6 @@
 /target
-**/target
+/apps/web/src-tauri/target/
+/core/proxy/target/
 /node_modules
 /apps/web/node_modules
 /.idea/protobuf-decoder.iml
